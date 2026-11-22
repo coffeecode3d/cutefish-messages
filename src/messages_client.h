@@ -43,6 +43,11 @@ struct Thread
     std::string snippet;
     bool group = false;
     bool channel = false;
+    // A forum supergroup has topics, each a thread of its own.
+    bool forum = false;
+    int64_t topicId = 0;
+    // Set on a topic: the parent conversation's key.
+    std::string parentKey;
     bool replyReady = true;
     bool starred = false;
     int unread = 0;

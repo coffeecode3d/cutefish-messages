@@ -455,8 +455,10 @@ void TelegramBackend::handle(const base::json::Value &object)
             if (found != m_privateChatByUser.end())
                 chatId = found->second;
         }
+        const int64_t topicId = object["message_thread_id"].toInt();
         const std::string action = object["action"]["@type"].toString();
-        if (Thread *thread = threadFor(chatId)) {
+        Thread *thread = topicId != 0 ? topicFor(chatId, topicId) : threadFor(chatId);
+        if (thread) {
             if (action == "chatActionTyping")
                 typingChanged(thread->key, true);
             else if (action == "chatActionCancel")
@@ -493,6 +495,24 @@ void TelegramBackend::handle(const base::json::Value &object)
         }
         return;
     }
+    if (type == "supergroup" && extra.starts_with("supergroup:")) {
+        const int64_t chatId = std::strtoll(extra.c_str() + 11, nullptr, 10);
+        if (Thread *thread = threadFor(chatId)) {
+            thread->forum = object["is_forum"].toBool(false);
+            if (thread->forum)
+                loadTopics(*thread);
+        }
+        threadsChanged();
+        return;
+    }
+    if (type == "forumTopics" && extra.starts_with("topics:")) {
+        const int64_t chatId = std::strtoll(extra.c_str() + 7, nullptr, 10);
+        const base::json::Value &topics = object["topics"];
+        for (size_t i = 0; i < topics.size(); ++i)
+            syncTopic(chatId, topics[i]);
+        threadsChanged();
+        return;
+    }
     if (type == "user" && extra.starts_with("user:")) {
         const int64_t userId = object["id"].toInt();
         std::string name = object["first_name"].toString();
@@ -515,6 +535,30 @@ void TelegramBackend::handle(const base::json::Value &object)
         }
         if (changed)
             threadsChanged();
+        return;
+    }
+    if (type == "messages" && extra.starts_with("topic:")) {
+        long long chatId = 0;
+        long long topicId = 0;
+        if (std::sscanf(extra.c_str(), "topic:%lld:%lld", &chatId, &topicId) != 2)
+            return;
+        Thread *thread = topicFor(int64_t(chatId), int64_t(topicId));
+        if (!thread)
+            return;
+        const base::json::Value &messages = object["messages"];
+        for (size_t i = 0; i < messages.size(); ++i)
+            addMessage(messages[i], true);
+        std::sort(thread->messages.begin(), thread->messages.end(),
+                  [](const Message &left, const Message &right) { return left.id < right.id; });
+        if (!thread->messages.empty()) {
+            const Message &last = thread->messages.back();
+            thread->snippet = last.body.empty()
+                    ? (last.attachmentPath.empty() ? "Attachment" : "Photo")
+                    : last.body;
+            thread->lastTimestamp = last.timestamp;
+        }
+        std::fprintf(stderr, "telegram: topic history %zu messages\n", messages.size());
+        threadsChanged();
         return;
     }
     if (type == "messages" && extra.starts_with("history:")) {
@@ -578,6 +622,80 @@ void TelegramBackend::handle(const base::json::Value &object)
         }
         return;
     }
+}
+
+std::vector<Thread> TelegramBackend::topics(const Thread &thread) const
+{
+    const auto found = m_topicThreads.find(thread.threadId);
+    return found == m_topicThreads.end() ? std::vector<Thread>() : found->second;
+}
+
+void TelegramBackend::loadTopics(const Thread &thread)
+{
+    if (!thread.forum || !m_topicsLoaded.insert(thread.threadId).second)
+        return;
+    base::json::Value request = base::json::Value::object();
+    request.insert("@type", "getForumTopics");
+    request.insert("chat_id", thread.threadId);
+    request.insert("query", std::string());
+    request.insert("offset_date", 0);
+    request.insert("offset_message_id", int64_t(0));
+    request.insert("offset_message_thread_id", int64_t(0));
+    request.insert("limit", 100);
+    request.insert("@extra", "topics:" + std::to_string(thread.threadId));
+    sendJson(request);
+}
+
+Thread *TelegramBackend::topicFor(int64_t chatId, int64_t topicId)
+{
+    if (chatId == 0 || topicId == 0)
+        return nullptr;
+    auto &list = m_topicThreads[chatId];
+    for (Thread &topic : list) {
+        if (topic.topicId == topicId)
+            return &topic;
+    }
+    Thread topic;
+    topic.key = "tg:" + std::to_string(chatId) + ":" + std::to_string(topicId);
+    topic.service = "telegram";
+    topic.serviceName = "Telegram";
+    topic.threadId = chatId;
+    topic.topicId = topicId;
+    topic.parentKey = "tg:" + std::to_string(chatId);
+    topic.name = "Topic";
+    topic.group = true;
+    topic.replyReady = true;
+    list.push_back(std::move(topic));
+    return &list.back();
+}
+
+void TelegramBackend::syncTopic(int64_t chatId, const base::json::Value &topic)
+{
+    const base::json::Value &info = topic["info"];
+    const int64_t topicId = info["message_thread_id"].toInt();
+    if (topicId == 0)
+        return;
+    Thread *child = topicFor(chatId, topicId);
+    if (!child)
+        return;
+    const std::string name = info["name"].toString();
+    if (!name.empty())
+        child->name = name;
+    child->group = true;
+    child->channel = false;
+    child->unread = int(topic["unread_count"].toInt());
+}
+
+Thread *TelegramBackend::threadForMessage(const base::json::Value &message)
+{
+    const int64_t chatId = message["chat_id"].toInt();
+    const int64_t topicId = message["message_thread_id"].toInt();
+    if (topicId != 0) {
+        Thread *parent = threadFor(chatId);
+        if (parent && parent->forum)
+            return topicFor(chatId, topicId);
+    }
+    return threadFor(chatId);
 }
 
 void TelegramBackend::loadChats()
@@ -646,6 +764,16 @@ void TelegramBackend::syncChat(const base::json::Value &chat)
         m_privateChatByUser[userId] = chatId;
         if (m_userNames.find(userId) == m_userNames.end())
             requestUser(userId);
+    } else if (type == "chatTypeSupergroup") {
+        const int64_t supergroupId = chat["type"]["supergroup_id"].toInt();
+        m_supergroupChats[supergroupId] = chatId;
+        if (m_supergroupsRequested.insert(supergroupId).second) {
+            base::json::Value request = base::json::Value::object();
+            request.insert("@type", "getSupergroup");
+            request.insert("supergroup_id", supergroupId);
+            request.insert("@extra", "supergroup:" + std::to_string(chatId));
+            sendJson(request);
+        }
     }
     requestAvatar(chatId, chat["photo"]["small"]);
 
@@ -709,10 +837,27 @@ void TelegramBackend::requestFile(const base::json::Value &file, int64_t chatId,
 void TelegramBackend::loadThread(const Thread &thread)
 {
     m_openChat = thread.threadId;
+    m_openTopic = thread.topicId;
     base::json::Value open = base::json::Value::object();
     open.insert("@type", "openChat");
     open.insert("chat_id", thread.threadId);
     sendJson(open);
+
+    if (thread.topicId != 0) {
+        if (!m_topicLoaded.insert(thread.key).second)
+            return;
+        base::json::Value request = base::json::Value::object();
+        request.insert("@type", "getMessageThreadHistory");
+        request.insert("chat_id", thread.threadId);
+        request.insert("message_id", thread.topicId);
+        request.insert("from_message_id", int64_t(0));
+        request.insert("offset", 0);
+        request.insert("limit", 100);
+        request.insert("@extra", "topic:" + std::to_string(thread.threadId) + ":"
+                                           + std::to_string(thread.topicId));
+        sendJson(request);
+        return;
+    }
 
     if (m_loadedChats.contains(thread.threadId))
         return;
@@ -731,15 +876,20 @@ void TelegramBackend::loadThread(const Thread &thread)
 void TelegramBackend::markRead(const Thread &thread)
 {
     m_openChat = thread.threadId;
+    m_openTopic = thread.topicId;
     viewChat(thread.threadId);
-    Thread *known = threadFor(thread.threadId);
+    Thread *known = thread.threadId ? threadFor(thread.threadId) : nullptr;
     if (known)
         known->unread = 0;
+    if (thread.topicId != 0) {
+        if (Thread *topic = topicFor(thread.threadId, thread.topicId))
+            topic->unread = 0;
+    }
 }
 
 void TelegramBackend::viewChat(int64_t chatId)
 {
-    Thread *thread = threadFor(chatId);
+    Thread *thread = m_openTopic != 0 ? topicFor(chatId, m_openTopic) : threadFor(chatId);
     if (!thread)
         return;
     base::json::Value::Array ids;
@@ -856,7 +1006,7 @@ Message TelegramBackend::messageFrom(const base::json::Value &message, bool grou
 void TelegramBackend::addMessage(const base::json::Value &message, bool history)
 {
     const int64_t chatId = message["chat_id"].toInt();
-    Thread *thread = threadFor(chatId);
+    Thread *thread = threadForMessage(message);
     if (!thread)
         return;
     Message parsed = messageFrom(message, thread->group);
@@ -907,7 +1057,7 @@ void TelegramBackend::addMessage(const base::json::Value &message, bool history)
     thread->lastTimestamp = parsed.timestamp;
 
     if (!history && !parsed.outgoing) {
-        if (chatId == m_openChat) {
+        if (chatId == m_openChat && thread->topicId == m_openTopic) {
             base::json::Value::Array ids;
             ids.push_back(base::json::Value(parsed.id));
             base::json::Value request = base::json::Value::object();
@@ -943,7 +1093,7 @@ bool TelegramBackend::send(const Thread &thread, const std::string &body, std::s
     base::json::Value request = base::json::Value::object();
     request.insert("@type", "sendMessage");
     request.insert("chat_id", thread.threadId);
-    request.insert("message_thread_id", 0);
+    request.insert("message_thread_id", thread.topicId);
     request.insert("input_message_content", std::move(content));
     sendJson(request);
     return true;
@@ -984,7 +1134,7 @@ bool TelegramBackend::sendFile(const Thread &thread, const std::string &path,
     base::json::Value request = base::json::Value::object();
     request.insert("@type", "sendMessage");
     request.insert("chat_id", thread.threadId);
-    request.insert("message_thread_id", 0);
+    request.insert("message_thread_id", thread.topicId);
     request.insert("input_message_content", std::move(content));
     sendJson(request);
     return true;
@@ -999,7 +1149,7 @@ void TelegramBackend::sendTyping(const Thread &thread, bool typing)
     base::json::Value request = base::json::Value::object();
     request.insert("@type", "sendChatAction");
     request.insert("chat_id", thread.threadId);
-    request.insert("message_thread_id", 0);
+    request.insert("message_thread_id", thread.topicId);
     request.insert("action", std::move(action));
     sendJson(request);
 }
@@ -1035,8 +1185,10 @@ std::vector<Thread> TelegramBackend::threads() const
 {
     std::vector<Thread> list;
     list.reserve(m_threads.size());
-    for (const auto &[chatId, thread] : m_threads)
-        list.push_back(thread);
+    for (const auto &[chatId, thread] : m_threads) {
+        if (thread.parentKey.empty())
+            list.push_back(thread);
+    }
     std::sort(list.begin(), list.end(), [](const Thread &left, const Thread &right) {
         return left.lastTimestamp > right.lastTimestamp;
     });

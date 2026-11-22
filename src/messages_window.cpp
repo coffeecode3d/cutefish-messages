@@ -190,7 +190,6 @@ public:
         m_snippet->setElide(ui::Label::Elide::Right);
         m_snippet->setFadesWhenDisabled(false);
         m_time->setFadesWhenDisabled(false);
-        startHold();
     }
 
     void bind(const Thread &thread, bool selected, bool showService)
@@ -236,53 +235,16 @@ public:
     std::function<void()> onClicked;
     std::function<void(ui::PointF windowPosition)> onMenu;
 
-    void startHold()
-    {
-        m_hold.setSingleShot(true);
-        m_hold.setInterval(std::chrono::milliseconds(550));
-        m_hold.onTimeout = [this] {
-            if (!m_holding)
-                return;
-            m_holding = false;
-            if (onMenu)
-                onMenu(m_holdPosition);
-        };
-    }
-
 protected:
     void pointerPress(const ui::PointerEvent &event) override
     {
         if (event.button == ui::MouseButton::Right) {
-            m_holding = false;
-            m_hold.stop();
             if (onMenu)
                 onMenu(mapToWindow(event.position));
             return;
         }
-        if (event.button != ui::MouseButton::Left)
-            return;
-        m_holdPosition = mapToWindow(event.position);
-        m_holding = true;
-        m_hold.start();
-        if (onClicked)
+        if (event.button == ui::MouseButton::Left && onClicked)
             onClicked();
-    }
-
-    void pointerMove(const ui::PointerEvent &event) override
-    {
-        if (!m_holding)
-            return;
-        const ui::PointF position = mapToWindow(event.position);
-        if (std::abs(position.x - m_holdPosition.x) + std::abs(position.y - m_holdPosition.y) > 8) {
-            m_holding = false;
-            m_hold.stop();
-        }
-    }
-
-    void pointerRelease(const ui::PointerEvent &) override
-    {
-        m_holding = false;
-        m_hold.stop();
     }
 
     void layout() override
@@ -313,13 +275,69 @@ protected:
 
 private:
     ui::ImageView *m_avatarImage;
-    base::Timer m_hold{base::EventLoop::current()};
-    ui::PointF m_holdPosition;
-    bool m_holding = false;
     ui::Label *m_avatar;
     ui::Label *m_name;
     ui::Label *m_snippet;
     ui::Label *m_time;
+    bool m_selected = false;
+    bool m_unread = false;
+};
+
+// One forum topic in the pane between the conversation list and the chat.
+class TopicRow : public ui::View
+{
+public:
+    TopicRow()
+        : m_name(addChild<ui::Label>())
+    {
+        m_name->setElide(ui::Label::Elide::Right);
+        m_name->setFadesWhenDisabled(false);
+    }
+
+    void bind(const Thread &topic, bool selected)
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        m_selected = selected;
+        m_unread = topic.unread > 0;
+        m_name->setText(topic.name);
+        m_name->setFontSize(theme.smallFontSize() + 1);
+        m_name->setFontFamily(theme.fontFamily);
+        m_name->setColor(ui::ColorId::Text);
+        requestLayout();
+        requestPaint();
+    }
+
+    bool acceptsPointer() const override { return true; }
+    std::function<void()> onClicked;
+
+protected:
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (event.button == ui::MouseButton::Left && onClicked)
+            onClicked();
+    }
+
+    void layout() override
+    {
+        m_name->setGeometry({14, 0, std::max(0.0, geometry().width - 30), geometry().height});
+    }
+
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        if (m_selected) {
+            painter.drawRoundedRect({6, 4, geometry().width - 12, geometry().height - 8},
+                                    {8, 0, ui::themeCorners()},
+                                    theme.highlight.withAlpha(0.14));
+        }
+        if (m_unread) {
+            painter.fillEllipse({geometry().width - 16, (geometry().height - 6) / 2, 6, 6},
+                                theme.highlight);
+        }
+    }
+
+private:
+    ui::Label *m_name;
     bool m_selected = false;
     bool m_unread = false;
 };
@@ -1388,6 +1406,8 @@ public:
         , m_header(addChild<ui::WindowHeader>(44))
         , m_sidebarTitle(addChild<ui::Label>(tr("Messages")))
         , m_sidebar(addChild<ui::ListView>())
+        , m_topicsTitle(addChild<ui::Label>(tr("Topics")))
+        , m_topics(addChild<ui::ListView>())
         , m_title(addChild<ui::Label>())
         , m_subtitle(addChild<ui::Label>())
         , m_messages(addChild<MessageList>())
@@ -1418,6 +1438,24 @@ public:
         setChildClipRadius(24);
         m_sidebarTitle->setFontSize(ui::Theme::current().fontSize() + 3);
         m_sidebarTitle->setFadesWhenDisabled(false);
+        m_topicsTitle->setFontSize(ui::Theme::current().smallFontSize());
+        m_topicsTitle->setColor(ui::ColorId::DisabledText);
+        m_topicsTitle->setFadesWhenDisabled(false);
+        m_topics->setRowHeight(44);
+        m_topics->setClipsChildren(true);
+        m_topics->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
+        m_topics->setVerticalBarPadding(4, 4);
+        m_topics->createItem = [] { return std::make_unique<TopicRow>(); };
+        m_topics->bindItem = [this](ui::View *item, size_t row) {
+            auto *topicRow = static_cast<TopicRow *>(item);
+            if (row >= m_window.m_topicList.size())
+                return;
+            const Thread &topic = m_window.m_topicList[row];
+            topicRow->bind(topic, topic.topicId == m_window.m_currentTopic);
+            topicRow->onClicked = [this, row] { m_window.selectTopic(int(row)); };
+        };
+        m_topicsTitle->setVisible(false);
+        m_topics->setVisible(false);
         m_sidebar->setRowHeight(56);
         m_sidebar->setClipsChildren(true);
         m_sidebar->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
@@ -1548,6 +1586,19 @@ public:
         }
     }
 
+    // Shows or hides the topics pane and rebinds its rows.
+    void setTopics()
+    {
+        const bool shown = m_window.m_topicMode;
+        m_topicsTitle->setVisible(shown);
+        m_topics->setVisible(shown);
+        m_topics->setRowCount(0);
+        m_topics->setRowCount(m_window.m_topicList.size());
+        m_topics->reload();
+        requestLayout();
+        requestPaint();
+    }
+
     // Rebuilds the conversation; the scroll to the newest message waits for
     // the content's height to be known.
     void showMessages(const std::vector<Message> &messages, bool group, bool sameThread)
@@ -1580,11 +1631,21 @@ protected:
         // The window body is rounded by the compositor; clip what we paint to
         // the same shape so no fill shows past it at the corners.
         painter.clipRoundedRect({-1, -1, geometry().width + 2, geometry().height + 2}, 25);
+        const double kTopics = m_window.m_topicMode ? 210.0 : 0.0;
+        const double left = kSidebar + kTopics;
         // The conversation is the window's paper; the list sits on a quieter
         // second surface, as iMessage's sidebar does.
-        painter.fillRect({kSidebar, 0, geometry().width - kSidebar, geometry().height},
+        painter.fillRect({left, 0, geometry().width - left, geometry().height},
                          theme.darkMode ? ui::Color::rgb(0x1C1C1E).withAlpha(0.88)
                                         : ui::Color::rgb(0xFFFFFF).withAlpha(0.90));
+        if (kTopics > 0) {
+            painter.fillRect({kSidebar, 0, kTopics, geometry().height},
+                             theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.035)
+                                            : ui::Color::rgb(0x000000).withAlpha(0.03));
+            painter.fillRoundedRect({left - 0.5, 12, 1, geometry().height - 24}, 0.5,
+                                    theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.10)
+                                                   : ui::Color::rgb(0x000000).withAlpha(0.09));
+        }
         painter.fillRect({0, 0, kSidebar, geometry().height},
                          theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.06)
                                         : ui::Color::rgb(0xFFFFFF).withAlpha(0.30));
@@ -1593,7 +1654,7 @@ protected:
                                                : ui::Color::rgb(0x000000).withAlpha(0.09));
         // The composer's pill, as iMessage's field floats in one.
         const double composerTop = geometry().height - 28 - 56;
-        painter.fillRoundedRect({kSidebar + 14, composerTop, geometry().width - kSidebar - 28, 46}, 23,
+        painter.fillRoundedRect({left + 14, composerTop, geometry().width - left - 28, 46}, 23,
                                 theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.07)
                                                : ui::Color::rgb(0xFFFFFF).withAlpha(0.55));
     }
@@ -1616,21 +1677,24 @@ protected:
         m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
         m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - 44 - 40)});
         m_services->setGeometry({0, height - 40, kSidebar, 40});
-        const double left = kSidebar;
-        const double right = width - kSidebar;
-        m_title->setGeometry({left + 18, 10, std::max(0.0, right - 140), 24});
-        m_subtitle->setGeometry({left + 18, 32, std::max(0.0, right - 140), 12});
+        const double kTopics = m_window.m_topicMode ? 210.0 : 0.0;
+        const double left = kSidebar + kTopics;
+        const double content = width - left;
+        m_topicsTitle->setGeometry({kSidebar + 14, 52, std::max(0.0, kTopics - 28), 20});
+        m_topics->setGeometry({kSidebar, 78, kTopics, std::max(0.0, height - 78 - 40)});
+        m_title->setGeometry({left + 18, 10, std::max(0.0, content - 140), 24});
+        m_subtitle->setGeometry({left + 18, 32, std::max(0.0, content - 140), 12});
         const double listTop = 52;
         const double listBottom = height - kStatus - kComposer - 8;
-        m_messages->setGeometry({left + 8, listTop, std::max(0.0, right - 24),
+        m_messages->setGeometry({left + 8, listTop, std::max(0.0, content - 24),
                                  std::max(0.0, listBottom - listTop)});
-        m_empty->setGeometry({left + 24, listTop, std::max(0.0, right - 48),
+        m_empty->setGeometry({left + 24, listTop, std::max(0.0, content - 48),
                               std::max(0.0, listBottom - listTop)});
         m_attach->setGeometry({left + 22, height - kStatus - kComposer + 9, 28, 28});
         m_composer->setGeometry({left + 58, height - kStatus - kComposer + 10,
-                                 std::max(0.0, right - 116), 36});
+                                 std::max(0.0, content - 116), 36});
         m_send->setGeometry({width - 56, height - kStatus - kComposer + 12, 32, 32});
-        m_status->setGeometry({left + 18, height - kStatus + 4, std::max(0.0, right - 36), 20});
+        m_status->setGeometry({left + 18, height - kStatus + 4, std::max(0.0, content - 36), 20});
     }
 
 private:
@@ -1638,6 +1702,8 @@ private:
     ui::WindowHeader *m_header;
     ui::Label *m_sidebarTitle;
     ui::ListView *m_sidebar;
+    ui::Label *m_topicsTitle;
+    ui::ListView *m_topics;
     ui::Label *m_title;
     ui::Label *m_subtitle;
     MessageList *m_messages;
@@ -1791,6 +1857,7 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
         selectThread(0);
     else
         m_root->setEmptyText(tr("No conversations yet."));
+
 }
 
 MessagesWindow::~MessagesWindow()
@@ -1851,7 +1918,7 @@ void MessagesWindow::openImage(int64_t messageId, const std::string &path)
 
 void MessagesWindow::updateAttachment(int64_t messageId, std::string path)
 {
-    for (std::vector<Thread> *list : {&m_allThreads, &m_threads}) {
+    for (std::vector<Thread> *list : {&m_allThreads, &m_threads, &m_topicList}) {
         for (Thread &thread : *list) {
             for (Message &message : thread.messages) {
                 if (message.id == messageId)
@@ -1965,6 +2032,11 @@ void MessagesWindow::showServiceThreads(const std::string &selected)
 void MessagesWindow::showServiceEmpty()
 {
     m_current = -1;
+    m_topicMode = false;
+    m_topicList.clear();
+    m_currentTopic = 0;
+    m_topicParentKey.clear();
+    m_root->setTopics();
     m_shownKey.clear();
     m_shownCount = 0;
     m_shownLast.clear();
@@ -2033,10 +2105,54 @@ void MessagesWindow::selectThread(int index)
         return;
     m_current = index;
     Thread &thread = m_threads[size_t(index)];
+    Backend *backend = backendFor(thread.service);
+
+    if (backend && backend->hasTopics(thread)) {
+        const bool sameParent = m_topicMode && m_topicParentKey == thread.key;
+        m_topicMode = true;
+        m_topicParentKey = thread.key;
+        m_topicParentName = thread.name;
+        thread.unread = 0;
+        if (!sameParent)
+            m_currentTopic = 0;
+        backend->loadTopics(thread);
+        m_topicList = backend->topics(thread);
+        m_root->setTopics();
+        m_root->refreshServices();
+        m_root->title()->setText(thread.name);
+        m_root->subtitle()->setText(m_topicList.empty() ? tr("Topics are loading\u2026")
+                                                        : tr("Topics"));
+        m_root->sidebar()->reload();
+        if (m_topicList.empty()) {
+            m_shownKey.clear();
+            m_root->showMessages({}, true, false);
+            m_root->setEmptyText(tr("Choose a topic."));
+            m_root->composer()->setEnabled(false);
+            m_root->sendButton()->setEnabled(false);
+            m_root->composer()->setPlaceholder(tr("Message"));
+            return;
+        }
+        int wanted = -1;
+        for (int i = 0; i < int(m_topicList.size()); ++i) {
+            if (m_topicList[size_t(i)].topicId == m_currentTopic)
+                wanted = i;
+        }
+        selectTopic(wanted < 0 ? 0 : wanted);
+        return;
+    }
+
+    if (m_topicMode) {
+        m_topicMode = false;
+        m_topicList.clear();
+        m_currentTopic = 0;
+        m_topicParentKey.clear();
+        m_root->setTopics();
+    }
+
     // Opening it clears its dot; the backend remembers that for this session.
     if (m_usePhone) {
         thread.unread = 0;
-        if (Backend *backend = backendFor(thread.service)) {
+        if (backend) {
             backend->markRead(thread);
             backend->loadThread(thread);
         }
@@ -2066,6 +2182,57 @@ void MessagesWindow::selectThread(int index)
         m_root->composer()->setPlaceholder(tr("Group replies are not in this version yet"));
     if (!m_usePhone && !m_demo)
         m_client->markRead(thread);
+}
+
+void MessagesWindow::selectTopic(int index)
+{
+    if (!m_topicMode || index < 0 || index >= int(m_topicList.size()))
+        return;
+    const Thread topic = m_topicList[size_t(index)];
+    m_currentTopic = topic.topicId;
+    for (const Thread &parent : m_threads) {
+        if (parent.key == topic.parentKey) {
+            m_topicParentName = parent.name;
+            break;
+        }
+    }
+    if (Backend *backend = backendFor(topic.service)) {
+        backend->markRead(topic);
+        backend->loadThread(topic);
+    }
+    m_root->setTopics();
+    m_root->title()->setText(topic.name);
+    m_root->subtitle()->setText(m_topicParentName);
+    m_root->refreshServices();
+    const std::string last = topic.messages.empty()
+            ? std::string()
+            : topic.messages.back().timestamp + topic.messages.back().body;
+    const bool sameTopic = m_shownKey == topic.key;
+    if (!sameTopic || m_shownCount != topic.messages.size() || m_shownLast != last) {
+        m_shownKey = topic.key;
+        m_shownCount = topic.messages.size();
+        m_shownLast = last;
+        m_root->showMessages(topic.messages, true, sameTopic);
+    }
+    m_root->sidebar()->reload();
+    m_root->setEmptyText(topic.messages.empty() ? tr("Loading\u2026") : std::string());
+    const bool canReply = m_demo || m_usePhone;
+    m_root->composer()->setEnabled(canReply);
+    m_root->sendButton()->setEnabled(canReply);
+    m_root->composer()->setPlaceholder(tr("Message"));
+}
+
+Thread *MessagesWindow::activeThread()
+{
+    if (m_topicMode) {
+        for (Thread &topic : m_topicList) {
+            if (topic.topicId == m_currentTopic)
+                return &topic;
+        }
+    }
+    if (m_current >= 0 && m_current < int(m_threads.size()))
+        return &m_threads[size_t(m_current)];
+    return nullptr;
 }
 
 void MessagesWindow::ensureTelegram()
@@ -2173,9 +2340,10 @@ void MessagesWindow::chooseAttachment()
 
 void MessagesWindow::sendAttachment(const std::string &path)
 {
-    if (m_current < 0 || m_current >= int(m_threads.size()))
+    Thread *active = activeThread();
+    if (!active)
         return;
-    Thread &thread = m_threads[size_t(m_current)];
+    Thread &thread = *active;
     Backend *backend = backendFor(thread.service);
     if (!backend)
         return;
@@ -2253,8 +2421,8 @@ void MessagesWindow::deleteThread(const std::string &key)
 
 void MessagesWindow::onTyping(const std::string &key, bool typing)
 {
-    if (m_current < 0 || m_current >= int(m_threads.size())
-        || m_threads[size_t(m_current)].key != key)
+    Thread *active = activeThread();
+    if (!active || active->key != key)
         return;
     if (!typing) {
         restoreSubtitle();
@@ -2269,6 +2437,10 @@ void MessagesWindow::restoreSubtitle()
 {
     m_typingHide.stop();
     m_typingKey.clear();
+    if (m_topicMode) {
+        m_root->subtitle()->setText(m_topicParentName);
+        return;
+    }
     if (m_current < 0 || m_current >= int(m_threads.size())) {
         m_root->subtitle()->setText(std::string());
         return;
@@ -2282,9 +2454,12 @@ void MessagesWindow::restoreSubtitle()
 
 void MessagesWindow::noteTyping()
 {
-    if (m_demo || !m_usePhone || m_current < 0 || m_current >= int(m_threads.size()))
+    if (m_demo || !m_usePhone)
         return;
-    Thread &thread = m_threads[size_t(m_current)];
+    Thread *active = activeThread();
+    if (!active)
+        return;
+    Thread &thread = *active;
     Backend *backend = backendFor(thread.service);
     if (!backend)
         return;
@@ -2304,9 +2479,10 @@ void MessagesWindow::noteTyping()
 
 void MessagesWindow::send()
 {
-    if (m_current < 0 || m_current >= int(m_threads.size()))
+    Thread *active = activeThread();
+    if (!active)
         return;
-    Thread &thread = m_threads[size_t(m_current)];
+    Thread &thread = *active;
     const std::string body = m_root->composer()->text();
     if (body.empty())
         return;

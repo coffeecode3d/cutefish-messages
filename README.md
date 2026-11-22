@@ -20,9 +20,9 @@ runtime underneath.
 - **Signal as a linked device**, through a native `signal-cli` helper with no
   JVM. Optional, and its history, groups and read state live in a small local
   SQLite store.
-- **Conversations that feel finished.** Contact names and pictures, groups
-  and channels with speakers above each bubble, links that open in the browser,
-  timestamps where a conversation breaks, and unread dots.
+- **Conversations that feel finished.** Contact names and pictures, groups,
+  channels and forum topics with speakers above each bubble, links that open in
+  the browser, timestamps where a conversation breaks, and unread dots.
 - **Pictures and files.** Inline pictures, a full-size viewer with **Save
   Photo**, and sending attachments alongside text from the composer.
 - **Presence where the service has it.** Signal read receipts show as

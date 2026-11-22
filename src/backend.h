@@ -41,6 +41,18 @@ public:
     virtual std::vector<Thread> threads() const = 0;
     // Fill the thread's messages, if they are not held yet.
     virtual void loadThread(const Thread &thread) = 0;
+    // Forums: a conversation may hold topics, each shown as its own list.
+    virtual bool hasTopics(const Thread &thread) const
+    {
+        (void)thread;
+        return false;
+    }
+    virtual std::vector<Thread> topics(const Thread &thread) const
+    {
+        (void)thread;
+        return {};
+    }
+    virtual void loadTopics(const Thread &thread) { (void)thread; }
     virtual void markRead(const Thread &thread) = 0;
     // Read state the services let us keep locally.
     virtual void setUnread(const Thread &thread, bool unread)

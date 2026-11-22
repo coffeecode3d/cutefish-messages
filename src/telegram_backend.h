@@ -41,6 +41,9 @@ public:
 
     std::vector<Thread> threads() const override;
     void loadThread(const Thread &thread) override;
+    bool hasTopics(const Thread &thread) const override { return thread.forum; }
+    std::vector<Thread> topics(const Thread &thread) const override;
+    void loadTopics(const Thread &thread) override;
     void markRead(const Thread &thread) override;
     bool send(const Thread &thread, const std::string &body, std::string &error) override;
     bool sendFile(const Thread &thread, const std::string &path, const std::string &caption,
@@ -89,6 +92,9 @@ private:
     void requestAvatar(int64_t chatId, const base::json::Value &photo);
     void loadHistory(int64_t chatId);
     void addMessage(const base::json::Value &message, bool history = false);
+    Thread *topicFor(int64_t chatId, int64_t topicId);
+    Thread *threadForMessage(const base::json::Value &message);
+    void syncTopic(int64_t chatId, const base::json::Value &topic);
     Message messageFrom(const base::json::Value &message, bool group) const;
     std::string senderName(const base::json::Value &sender) const;
     std::string bodyOf(const base::json::Value &content, bool &image,
@@ -121,6 +127,12 @@ private:
     std::map<int64_t, int64_t> m_privateChatByUser;
     std::map<int64_t, int64_t> m_lastReadOutbox;
     std::map<int64_t, int64_t> m_senderIds;
+    std::map<int64_t, int64_t> m_supergroupChats;
+    std::set<int64_t> m_supergroupsRequested;
+    std::map<int64_t, std::vector<Thread>> m_topicThreads;
+    std::set<int64_t> m_topicsLoaded;
+    std::set<std::string> m_topicLoaded;
+    int64_t m_openTopic = 0;
     int m_chatLoadTries = 0;
     std::map<int64_t, PendingFile> m_pendingFiles;
 };

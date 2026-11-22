@@ -50,6 +50,8 @@ private:
     void showServiceEmpty();
     void chooseService(const std::string &service);
     void selectThread(int index);
+    void selectTopic(int index);
+    Thread *activeThread();
     void onTyping(const std::string &key, bool typing);
     void restoreSubtitle();
     void noteTyping();
@@ -100,6 +102,12 @@ private:
     // Every service's conversations, and the subset the sidebar is showing.
     std::vector<Thread> m_allThreads;
     std::vector<Thread> m_threads;
+    // A forum's topics, and the one being read.
+    std::vector<Thread> m_topicList;
+    bool m_topicMode = false;
+    std::string m_topicParentKey;
+    std::string m_topicParentName;
+    int64_t m_currentTopic = 0;
     // "sms", "signal", or "all". New windows start on SMS.
     std::string m_activeService = "sms";
     int m_current = -1;
