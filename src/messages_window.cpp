@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "messages_window.h"
+#include "sms_backend.h"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -159,47 +160,6 @@ int64_t secondsOf(const std::string &timestamp)
     parsed.tm_min = minute;
     parsed.tm_sec = second;
     return int64_t(timegm(&parsed));
-}
-
-Message messageOf(const phone::SmsMessage &sms)
-{
-    Message message;
-    message.id = sms.id;
-    message.handle = sms.address;
-    message.body = sms.body;
-    // The original when it has been fetched, unless it is something only the
-    // preview can show.
-    const bool playable = sms.fullPath.ends_with(".mp4") || sms.fullPath.ends_with(".mp3")
-            || sms.fullPath.ends_with(".bin");
-    if (!sms.fullPath.empty() && !playable) {
-        message.attachmentPath = sms.fullPath;
-    } else {
-        for (const phone::SmsAttachment &attachment : sms.attachments) {
-            if (!attachment.thumbnailPath.empty()) {
-                message.attachmentPath = attachment.thumbnailPath;
-                break;
-            }
-        }
-    }
-    message.timestamp = timestampOf(sms.date);
-    message.outgoing = sms.type == 2;
-    message.read = sms.read;
-    return message;
-}
-
-// "+14803460971" reads as a person, not as a number.
-std::string prettyAddress(const std::string &address)
-{
-    std::string digits;
-    for (const char c : address) {
-        if (std::isdigit(static_cast<unsigned char>(c)))
-            digits.push_back(c);
-    }
-    if (address.size() > 1 && address[0] == '+' && digits.size() == 11 && digits[0] == '1')
-        return "+1 (" + digits.substr(1, 3) + ") " + digits.substr(4, 3) + "-" + digits.substr(7);
-    if (digits.size() == 10 && digits == address)
-        return "(" + digits.substr(0, 3) + ") " + digits.substr(3, 3) + "-" + digits.substr(6);
-    return address;
 }
 
 } // namespace
@@ -649,7 +609,7 @@ private:
     int64_t m_messageId = 0;
 };
 
-// The sidebar's footer: a quiet pill that opens the accounts sheet.
+// The sidebar's footer: a quiet bar, not a floating pill, that opens Services.
 class ServicesPill : public ui::View
 {
 public:
@@ -659,94 +619,124 @@ public:
         m_label->setFontSize(ui::Theme::current().smallFontSize());
         m_label->setVerticallyCentered(true);
         m_label->setFadesWhenDisabled(false);
+        m_label->setColor(ui::ColorId::Text);
     }
+
     bool acceptsPointer() const override { return true; }
     std::function<void()> onClicked;
+
 protected:
-    void layout() override { m_label->setGeometry({40, 0, geometry().width - 52, geometry().height}); }
+    void layout() override
+    {
+        m_label->setGeometry({42, 0, std::max(0.0, geometry().width - 60), geometry().height});
+    }
+
     void paint(ui::Painter &painter) override
     {
         const ui::Theme &theme = ui::Theme::current();
-        painter.fillRoundedRect({0, 0, geometry().width, geometry().height}, 12,
-                                theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.08)
-                                               : ui::Color::rgb(0x000000).withAlpha(0.05));
-        painter.fillEllipse({12, (geometry().height - 18) / 2, 18, 18}, theme.highlight);
+        // A hairline instead of a plate, so it reads as part of the sidebar.
+        painter.fillRect({12, 0, geometry().width - 24, 1},
+                         theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.08)
+                                        : ui::Color::rgb(0x000000).withAlpha(0.07));
+        painter.fillEllipse({18, (geometry().height - 16) / 2, 16, 16},
+                            theme.highlight.withAlpha(0.85));
     }
+
     void pointerPress(const ui::PointerEvent &event) override
     {
         if (event.button == ui::MouseButton::Left && onClicked)
             onClicked();
     }
+
 private:
     ui::Label *m_label;
 };
 
-// Which services feed the window; SMS is here, the others are next.
+// Which services feed the window: SMS now, the others named honestly.
 class AccountsSheet : public ui::View
 {
 public:
     AccountsSheet()
         : m_title(addChild<ui::Label>(tr("Services")))
-        , m_subtitle(addChild<ui::Label>(tr("Conversations from every service in one window.")))
+        , m_subtitle(addChild<ui::Label>(tr("Every conversation in one window.")))
+        , m_footer(addChild<ui::Label>(tr("More services are on the way.")))
     {
-        m_title->setFontSize(ui::Theme::current().fontSize() + 4);
+        m_title->setFontSize(ui::Theme::current().fontSize() + 5);
         m_title->setFadesWhenDisabled(false);
         m_subtitle->setFontSize(ui::Theme::current().smallFontSize());
         m_subtitle->setColor(ui::ColorId::DisabledText);
         m_subtitle->setFadesWhenDisabled(false);
-        const std::pair<const char *, const char *> rows[] = {
-            {"Phone", "SMS & MMS"},
+        m_footer->setFontSize(ui::Theme::current().smallFontSize());
+        m_footer->setColor(ui::ColorId::DisabledText);
+        m_footer->setFadesWhenDisabled(false);
+
+        const std::pair<const char *, const char *> services[] = {
+            {"Phone", "SMS & MMS \u00b7 connected"},
             {"Signal", "Not added yet"},
             {"Telegram", "Not added yet"},
             {"iPhone", "BlueFerry, later"},
             {"Google Messages", "RCS is closed to other apps"},
         };
-        for (const auto &[name, detail] : rows) {
-            auto *row = addChild<ui::Label>(std::string(name) + "   " + detail);
-            row->setFontSize(ui::Theme::current().fontSize() - 1);
-            row->setFadesWhenDisabled(false);
-            row->setColor(ui::ColorId::Text);
-            m_rows.push_back(row);
+        for (const auto &[name, detail] : services) {
+            auto *title = addChild<ui::Label>(name);
+            title->setFontSize(ui::Theme::current().fontSize());
+            title->setFadesWhenDisabled(false);
+            auto *sub = addChild<ui::Label>(detail);
+            sub->setFontSize(ui::Theme::current().smallFontSize());
+            sub->setColor(ui::ColorId::DisabledText);
+            sub->setFadesWhenDisabled(false);
+            m_rows.push_back({title, sub});
         }
         setVisible(false);
     }
+
     bool acceptsPointer() const override { return true; }
     bool acceptsFocus() const override { return true; }
     void open() { setVisible(true); setFocus(); requestPaint(); }
+
 protected:
     void layout() override
     {
-        const double cardWidth = std::min(420.0, geometry().width - 80);
-        const double left = (geometry().width - cardWidth) / 2;
-        m_title->setGeometry({left + 28, 60, cardWidth - 56, 30});
-        m_subtitle->setGeometry({left + 28, 90, cardWidth - 56, 20});
-        double y = 130;
-        for (ui::Label *row : m_rows) {
-            row->setGeometry({left + 28, y, cardWidth - 56, 24});
-            y += 34;
+        const double width = std::min(440.0, geometry().width - 80);
+        m_card = {(geometry().width - width) / 2, 44, width,
+                  104.0 + m_rows.size() * 58.0 + 44.0};
+        m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 28});
+        m_subtitle->setGeometry({m_card.x + 26, m_card.y + 50, width - 52, 18});
+        double y = m_card.y + 78;
+        for (const auto &[title, detail] : m_rows) {
+            title->setGeometry({m_card.x + 26, y + 8, width - 52, 20});
+            detail->setGeometry({m_card.x + 26, y + 28, width - 52, 18});
+            y += 58;
         }
-        m_cardHeight = y + 24;
+        m_footer->setGeometry({m_card.x + 26, m_card.y + m_card.height - 30, width - 52, 18});
     }
+
     void paint(ui::Painter &painter) override
     {
         const ui::Theme &theme = ui::Theme::current();
         painter.fillRect({0, 0, geometry().width, geometry().height},
-                         ui::Color::rgb(0x000000).withAlpha(0.45));
-        const double cardWidth = std::min(420.0, geometry().width - 80);
-        const double left = (geometry().width - cardWidth) / 2;
-        painter.fillRoundedRect({left, 40, cardWidth, m_cardHeight}, 20,
-                                theme.darkMode ? ui::Color::rgb(0x1C1C1E).withAlpha(0.97)
-                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.97));
+                         ui::Color::rgb(0x000000).withAlpha(0.38));
+        painter.fillRoundedRect(m_card, 20,
+                                theme.darkMode ? ui::Color::rgb(0x1E1E20).withAlpha(0.98)
+                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.98));
+        double y = m_card.y + 78;
+        for (size_t i = 0; i < m_rows.size(); ++i) {
+            if (i > 0) {
+                painter.fillRect({m_card.x + 26, y - 1, m_card.width - 52, 1},
+                                 theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.07)
+                                                : ui::Color::rgb(0x000000).withAlpha(0.06));
+            }
+            y += 58;
+        }
     }
+
     void pointerPress(const ui::PointerEvent &event) override
     {
-        const double cardWidth = std::min(420.0, geometry().width - 80);
-        const double left = (geometry().width - cardWidth) / 2;
-        const ui::RectF card {left, 40, cardWidth, m_cardHeight};
-        if (event.position.x < card.x || event.position.x > card.x + card.width
-            || event.position.y < card.y || event.position.y > card.y + card.height)
+        if (event.position.x < m_card.x || event.position.x > m_card.x + m_card.width
+            || event.position.y < m_card.y || event.position.y > m_card.y + m_card.height)
             setVisible(false);
     }
+
     bool keyPress(const ui::KeyEvent &event) override
     {
         if (event.key == ui::key::Escape) {
@@ -755,11 +745,18 @@ protected:
         }
         return false;
     }
+
 private:
+    struct Row
+    {
+        ui::Label *title;
+        ui::Label *detail;
+    };
     ui::Label *m_title;
     ui::Label *m_subtitle;
-    std::vector<ui::Label *> m_rows;
-    double m_cardHeight = 300;
+    ui::Label *m_footer;
+    std::vector<Row> m_rows;
+    ui::RectF m_card;
 };
 
 class MessagesWindow::RootView : public ui::View
@@ -916,8 +913,8 @@ protected:
         m_viewer->setGeometry({0, 0, width, height});
         m_accounts->setGeometry({0, 0, width, height});
         m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
-        m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - kStatus - 44 - 42)});
-        m_services->setGeometry({10, height - kStatus - 40, kSidebar - 20, 30});
+        m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - 44 - 40)});
+        m_services->setGeometry({0, height - 40, kSidebar, 40});
         const double left = kSidebar;
         const double right = width - kSidebar;
         m_title->setGeometry({left + 18, 10, std::max(0.0, right - 140), 24});
@@ -953,8 +950,7 @@ private:
 };
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
-    : m_refresh(loop)
-    , m_sync(loop)
+    : m_sync(loop)
     , m_demo(demo)
     , m_client(std::make_unique<MessagesClient>(loop))
 {
@@ -1004,47 +1000,33 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
         group.snippet = group.messages.back().body;
         m_threads = {group, first, second};
     } else {
-        std::string phoneError;
-        m_phone = std::make_unique<phone::PhoneLink>(loop);
-        if (m_phone->start(phoneError)) {
+        auto sms = std::make_unique<SmsBackend>(loop);
+        std::string backendError;
+        if (sms->start(backendError)) {
             m_usePhone = true;
-            m_phoneSubscriptions.push_back(
-                    m_phone->stateChanged.connect([this] { updateStatus(); }));
+            m_backendSubscriptions.push_back(
+                    sms->threadsChanged.connect([this] { reloadFromPhone(); }));
+            m_backendSubscriptions.push_back(
+                    sms->statusChanged.connect([this] { updateStatus(); }));
+            m_backendSubscriptions.push_back(sms->attachmentReady.connect(
+                    [this](int64_t id, std::string path) {
+                        updateAttachment(id, std::move(path));
+                    }));
+            m_backends.push_back(std::move(sms));
+
             m_notifier = std::make_unique<Notifier>(loop);
             m_notifierSubscription = m_notifier->activated.connect(
-                    [this](int64_t thread) { openConversation(thread); });
-            m_refresh.setSingleShot(true);
-            m_refresh.setInterval(std::chrono::milliseconds(60));
-            m_refresh.onTimeout = [this] {
-                phoneConversations(std::move(m_pendingConversations));
-            };
-            m_phoneSubscriptions.push_back(m_phone->conversationsReceived.connect(
-                    [this](std::vector<phone::Conversation> list) {
-                        m_pendingConversations = std::move(list);
-                        m_refresh.start();
-                    }));
-            m_phoneSubscriptions.push_back(m_phone->threadReceived.connect(
-                    [this](int64_t thread, std::vector<phone::SmsMessage> messages) {
-                        phoneMessages(thread, std::move(messages));
-                    }));
-            m_phoneSubscriptions.push_back(m_phone->attachmentReady.connect(
-                    [this](int64_t id, std::string path) {
-                        phoneAttachment(id, std::move(path));
-                    }));
-            m_phoneSubscriptions.push_back(m_phone->notice.connect(
-                    [this](std::string text) { m_root->status()->setText(text); }));
-            m_phoneSubscriptions.push_back(
-                    m_phone->contactsChanged.connect([this] { reloadFromPhone(); }));
+                    [this](const std::string &key) { openConversation(key); });
+
             m_sync.setInterval(std::chrono::seconds(20));
             m_sync.onTimeout = [this] {
-                if (m_phone && m_phone->isConnected())
-                    m_phone->requestConversations();
+                for (auto &backend : m_backends)
+                    backend->refresh();
             };
             m_sync.start();
             reloadFromPhone();
             updateStatus();
         } else {
-            m_phone.reset();
             m_subscriptions.push_back(m_client->changed.connect([this] {
                 reloadThreads();
                 updateStatus();
@@ -1068,35 +1050,6 @@ MessagesWindow::~MessagesWindow()
     m_subscriptions.clear();
 }
 
-std::string MessagesWindow::nameOf(const std::string &address) const
-{
-    if (m_phone) {
-        const std::string known = m_phone->nameFor(address);
-        if (!known.empty())
-            return known;
-    }
-    return prettyAddress(address);
-}
-
-std::string MessagesWindow::groupName(const std::vector<std::string> &addresses) const
-{
-    std::vector<std::string> names;
-    for (const std::string &address : addresses) {
-        const std::string name = nameOf(address);
-        if (std::find(names.begin(), names.end(), name) == names.end())
-            names.push_back(name);
-    }
-    if (names.empty())
-        return tr("Group conversation");
-    if (names.size() <= 2) {
-        std::string joined = names[0];
-        for (size_t i = 1; i < names.size(); ++i)
-            joined += " & " + names[i];
-        return joined;
-    }
-    return names[0] + ", " + names[1] + " +" + std::to_string(names.size() - 2);
-}
-
 void MessagesWindow::applyTheme()
 {
     const ui::Theme &theme = ui::Theme::current();
@@ -1117,6 +1070,38 @@ void MessagesWindow::applyTheme()
     material.bevel = 24;
     material.rim = 0.35;
     setBackgroundGlass(material);
+}
+
+void MessagesWindow::openImage(int64_t messageId, const std::string &path)
+{
+    if (m_usePhone && m_current >= 0 && m_current < int(m_threads.size())) {
+        if (Backend *backend = backendFor(m_threads[size_t(m_current)].service))
+            backend->fetchAttachment(messageId);
+    }
+    m_root->showImage(messageId, path);
+}
+
+void MessagesWindow::updateAttachment(int64_t messageId, std::string path)
+{
+    for (Thread &thread : m_threads) {
+        for (Message &message : thread.messages) {
+            if (message.id == messageId)
+                message.attachmentPath = path;
+        }
+    }
+    m_root->updateAttachment(messageId, path);
+}
+
+void MessagesWindow::openConversation(const std::string &key)
+{
+    for (int index = 0; index < int(m_threads.size()); ++index) {
+        if (m_threads[size_t(index)].key != key)
+            continue;
+        selectThread(index);
+        m_root->sidebar()->scrollToRow(size_t(index));
+        show();
+        return;
+    }
 }
 
 void MessagesWindow::reloadThreads()
@@ -1145,208 +1130,73 @@ void MessagesWindow::reloadThreads()
 
 void MessagesWindow::reloadFromPhone()
 {
-    // Newest first, whatever order the summaries arrived in or were updated.
-    std::sort(m_conversations.begin(), m_conversations.end(),
-              [](const phone::Conversation &left, const phone::Conversation &right) {
-                  return left.date > right.date;
-              });
-    const int64_t selected = m_current >= 0 && m_current < int(m_threads.size())
-            ? m_threads[size_t(m_current)].threadId
-            : 0;
-    m_threads.clear();
-    for (const phone::Conversation &conversation : m_conversations) {
-        Thread thread;
-        thread.key = "phone:" + std::to_string(conversation.threadId);
-        thread.threadId = conversation.threadId;
-        thread.address = conversation.address;
-        thread.addresses = conversation.addresses;
-        if (thread.addresses.empty() && !conversation.address.empty())
-            thread.addresses.push_back(conversation.address);
-        thread.group = thread.addresses.size() > 1;
-        thread.name = thread.group ? groupName(thread.addresses) : nameOf(conversation.address);
-        thread.snippet = conversation.snippet;
-        thread.lastTimestamp = timestampOf(conversation.date);
-        thread.unread = conversation.read || m_readThreads.count(conversation.threadId) ? 0 : 1;
-        const auto cached = m_phoneThreads.find(conversation.threadId);
-        if (cached != m_phoneThreads.end()) {
-            for (const phone::SmsMessage &sms : cached->second) {
-                Message message = messageOf(sms);
-                if (thread.group && !message.outgoing)
-                    message.sender = nameOf(message.handle);
-                thread.messages.push_back(std::move(message));
+    const std::string selected = m_current >= 0 && m_current < int(m_threads.size())
+            ? m_threads[size_t(m_current)].key
+            : std::string();
+
+    std::vector<Thread> merged;
+    for (const auto &backend : m_backends) {
+        std::vector<Thread> list = backend->threads();
+        merged.insert(merged.end(), std::make_move_iterator(list.begin()),
+                      std::make_move_iterator(list.end()));
+    }
+    std::sort(merged.begin(), merged.end(), [](const Thread &left, const Thread &right) {
+        return left.lastTimestamp > right.lastTimestamp;
+    });
+
+    const bool firstLoad = m_threads.empty();
+    const int64_t now = int64_t(std::time(nullptr));
+    if (m_notifier) {
+        for (const Thread &thread : merged) {
+            if (firstLoad) {
+                m_notified[thread.key] = thread.lastTimestamp;
+                continue;
             }
+            if (thread.unread == 0 || thread.snippet.empty() || thread.key == selected)
+                continue;
+            // Only news this session, not an old unread thread seen first.
+            if (secondsOf(thread.lastTimestamp) + 900 < now)
+                continue;
+            const auto announced = m_notified.find(thread.key);
+            if (announced != m_notified.end() && announced->second >= thread.lastTimestamp)
+                continue;
+            if (m_notifier->notify(thread.name, thread.snippet, thread.key))
+                m_notified[thread.key] = thread.lastTimestamp;
         }
-        m_threads.push_back(std::move(thread));
     }
 
-    // reload() keeps rows whose index did not change, which is exactly the
-    // case when a conversation moves: drop them so every row rebinds.
+    m_threads = std::move(merged);
+    // reload() keeps rows whose index did not change; drop them so a moved
+    // conversation rebinds.
     m_root->sidebar()->setRowCount(0);
     m_root->sidebar()->setRowCount(m_threads.size());
     m_root->sidebar()->reload();
 
     for (int index = 0; index < int(m_threads.size()); ++index) {
-        if (m_threads[size_t(index)].threadId != selected)
+        if (m_threads[size_t(index)].key != selected)
             continue;
-        if (index == m_current) {
-            m_root->title()->setText(m_threads[size_t(index)].name);
-            m_root->sidebar()->reload();
-            refreshOpenThread();
-            return;
-        }
+        // Same row, but its messages may have just arrived: select again so
+        // the pane rebuilds when the content changed.
         selectThread(index);
-        refreshOpenThread();
         return;
     }
     m_current = -1;
     if (!m_threads.empty()) {
         selectThread(0);
-        refreshOpenThread();
         return;
     }
-    m_root->setEmptyText(m_phone && m_phone->isConnected()
+    m_root->setEmptyText(m_usePhone
                                  ? tr("No messages yet.")
                                  : tr("Your phone connects over Wi-Fi. Keep KDE Connect open on it."));
 }
 
-void MessagesWindow::phoneConversations(std::vector<phone::Conversation> conversations)
+Backend *MessagesWindow::backendFor(const std::string &service) const
 {
-    std::sort(conversations.begin(), conversations.end(),
-              [](const phone::Conversation &left, const phone::Conversation &right) {
-                  return left.date > right.date;
-              });
-
-    // Announce what is new and unread, but not the first list after launch,
-    // which is history rather than news.
-    const bool firstLoad = m_conversations.empty();
-    const int64_t open = m_current >= 0 && m_current < int(m_threads.size())
-            ? m_threads[size_t(m_current)].threadId
-            : 0;
-    const int64_t now = nowMilliseconds();
-    if (firstLoad) {
-        // Everything already here is history; remember it silently.
-        for (const phone::Conversation &conversation : conversations)
-            m_notified[conversation.threadId] = conversation.date;
-    } else if (m_notifier) {
-        for (const phone::Conversation &conversation : conversations) {
-            if (conversation.read || conversation.type != 1 || conversation.snippet.empty())
-                continue;
-            if (conversation.threadId == open || conversation.threadId == 0)
-                continue;
-            // Only news, not an old unread thread seen for the first time.
-            if (conversation.date + 15 * 60 * 1000 < now)
-                continue;
-            const auto announced = m_notified.find(conversation.threadId);
-            if (announced != m_notified.end() && announced->second >= conversation.date)
-                continue;
-            if (m_notifier->notify(nameOf(conversation.address), conversation.snippet,
-                                   conversation.threadId))
-                m_notified[conversation.threadId] = conversation.date;
-        }
+    for (const auto &backend : m_backends) {
+        if (backend->account().id == service)
+            return backend.get();
     }
-
-    m_conversations = std::move(conversations);
-    reloadFromPhone();
-}
-
-void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages)
-{
-    std::sort(messages.begin(), messages.end(),
-              [](const phone::SmsMessage &left, const phone::SmsMessage &right) {
-                  return left.date < right.date;
-              });
-    if (m_requestedThread == threadId)
-        m_requestedThread = 0;
-    m_phoneThreads[threadId] = std::move(messages);
-    if (m_current >= 0 && m_current < int(m_threads.size())
-        && m_threads[size_t(m_current)].threadId == threadId) {
-        Thread &thread = m_threads[size_t(m_current)];
-        thread.messages.clear();
-        for (const phone::SmsMessage &sms : m_phoneThreads[threadId]) {
-            Message message = messageOf(sms);
-            if (thread.group && !message.outgoing)
-                message.sender = nameOf(message.handle);
-            thread.messages.push_back(std::move(message));
-        }
-        const std::string last = thread.messages.empty()
-                ? std::string()
-                : thread.messages.back().timestamp + thread.messages.back().body;
-        if (m_shownThread != thread.threadId || m_shownCount != thread.messages.size()
-            || m_shownLast != last) {
-            m_shownThread = thread.threadId;
-            m_shownCount = thread.messages.size();
-            m_shownLast = last;
-            m_root->showMessages(thread.messages, thread.group);
-        }
-        m_root->setEmptyText(thread.messages.empty() ? tr("Loading…") : std::string());
-    }
-}
-
-void MessagesWindow::refreshOpenThread()
-{
-    if (!m_usePhone || !m_phone || m_current < 0 || m_current >= int(m_threads.size()))
-        return;
-    const int64_t thread = m_threads[size_t(m_current)].threadId;
-    if (thread == 0 || m_requestedThread == thread)
-        return;
-    int64_t cached = 0;
-    const auto held = m_phoneThreads.find(thread);
-    if (held != m_phoneThreads.end() && !held->second.empty())
-        cached = held->second.back().date;
-    int64_t summary = 0;
-    for (const phone::Conversation &conversation : m_conversations) {
-        if (conversation.threadId == thread)
-            summary = conversation.date;
-    }
-    if (summary > cached) {
-        m_requestedThread = thread;
-        m_phone->requestThread(thread);
-    }
-}
-
-void MessagesWindow::openConversation(int64_t threadId)
-{
-    for (int index = 0; index < int(m_threads.size()); ++index) {
-        if (m_threads[size_t(index)].threadId != threadId)
-            continue;
-        selectThread(index);
-        m_root->sidebar()->scrollToRow(size_t(index));
-        show();
-        return;
-    }
-}
-
-void MessagesWindow::openImage(int64_t messageId, const std::string &path)
-{
-    bool full = false;
-    for (const auto &[threadId, list] : m_phoneThreads) {
-        for (const phone::SmsMessage &sms : list) {
-            if (sms.id == messageId)
-                full = !sms.fullPath.empty();
-        }
-    }
-    // An old preview: ask for the original, and the viewer sharpens when it
-    // lands rather than making the click wait.
-    if (!full && m_usePhone && m_phone)
-        m_phone->requestAttachmentNow(messageId);
-    m_root->showImage(messageId, path);
-}
-
-void MessagesWindow::phoneAttachment(int64_t messageId, std::string path)
-{
-    for (auto &[threadId, list] : m_phoneThreads) {
-        for (phone::SmsMessage &sms : list) {
-            if (sms.id == messageId)
-                sms.fullPath = path;
-        }
-    }
-    if (m_current >= 0 && m_current < int(m_threads.size())) {
-        for (Message &message : m_threads[size_t(m_current)].messages) {
-            if (message.id == messageId)
-                message.attachmentPath = path;
-        }
-    }
-    m_root->updateAttachment(messageId, path);
+    return nullptr;
 }
 
 void MessagesWindow::selectThread(int index)
@@ -1355,14 +1205,12 @@ void MessagesWindow::selectThread(int index)
         return;
     m_current = index;
     Thread &thread = m_threads[size_t(index)];
-    // Opening it here clears its dot, and keeps it cleared while this window
-    // is open even if the phone's app still reports it unread.
+    // Opening it clears its dot; the backend remembers that for this session.
     if (m_usePhone && thread.threadId != 0) {
-        m_readThreads.insert(thread.threadId);
         thread.unread = 0;
-        for (phone::Conversation &conversation : m_conversations) {
-            if (conversation.threadId == thread.threadId)
-                conversation.read = true;
+        if (Backend *backend = backendFor(thread.service)) {
+            backend->markRead(thread);
+            backend->loadThread(thread);
         }
     }
     m_root->title()->setText(thread.name);
@@ -1370,9 +1218,9 @@ void MessagesWindow::selectThread(int index)
     const std::string last = thread.messages.empty()
             ? std::string()
             : thread.messages.back().timestamp + thread.messages.back().body;
-    if (m_shownThread != thread.threadId || m_shownCount != thread.messages.size()
+    if (m_shownKey != thread.key || m_shownCount != thread.messages.size()
         || m_shownLast != last) {
-        m_shownThread = thread.threadId;
+        m_shownKey = thread.key;
         m_shownCount = thread.messages.size();
         m_shownLast = last;
         m_root->showMessages(thread.messages, thread.group);
@@ -1386,15 +1234,8 @@ void MessagesWindow::selectThread(int index)
         m_root->composer()->setPlaceholder(tr("Message"));
     else
         m_root->composer()->setPlaceholder(tr("Group replies are not in this version yet"));
-    if (m_usePhone) {
-        if (thread.messages.empty() && thread.threadId != 0 && m_phone
-            && m_requestedThread != thread.threadId) {
-            m_requestedThread = thread.threadId;
-            m_phone->requestThread(thread.threadId);
-        }
-    } else if (!m_demo) {
+    if (!m_usePhone && !m_demo)
         m_client->markRead(thread);
-    }
 }
 
 void MessagesWindow::send()
@@ -1403,7 +1244,6 @@ void MessagesWindow::send()
         return;
     Thread &thread = m_threads[size_t(m_current)];
     const std::string body = m_root->composer()->text();
-    std::fprintf(stderr, "send: thread %d, %zu character(s)\n", m_current, body.size());
     if (body.empty())
         return;
     if (m_demo) {
@@ -1413,39 +1253,15 @@ void MessagesWindow::send()
         selectThread(m_current);
         return;
     }
-    if (m_usePhone) {
+    Backend *backend = m_usePhone ? backendFor(thread.service) : nullptr;
+    if (backend) {
         std::string error;
-        std::vector<std::string> recipients = thread.addresses;
-        if (recipients.empty())
-            recipients.push_back(thread.address);
-        if (!m_phone->sendSms(recipients, body, error)) {
+        if (!backend->send(thread, body, error)) {
             m_root->status()->setText(error);
             return;
         }
-        phone::SmsMessage sent;
-        sent.threadId = thread.threadId;
-        sent.address = thread.address;
-        sent.body = body;
-        sent.date = nowMilliseconds();
-        sent.type = 2;
-        sent.read = true;
-        m_phoneThreads[thread.threadId].push_back(sent);
-        thread.messages.push_back(messageOf(sent));
-        thread.snippet = body;
-        thread.lastTimestamp = timestampOf(sent.date);
-        // The list follows the phone: this conversation is now the newest,
-        // both here and in the link's own cache, so a later summary agrees.
-        m_phone->noteSent(thread.threadId, body, sent.date);
-        for (phone::Conversation &conversation : m_conversations) {
-            if (conversation.threadId == thread.threadId) {
-                conversation.date = sent.date;
-                conversation.snippet = body;
-                conversation.type = 2;
-            }
-        }
         m_root->composer()->setText({});
         reloadFromPhone();
-        // It is the newest now; show the list from the top so it is in sight.
         m_root->sidebar()->scrollToRow(0);
         return;
     }
@@ -1465,19 +1281,20 @@ void MessagesWindow::updateStatus()
         return;
     }
     if (m_usePhone) {
-        if (!m_phone->isConnected()) {
+        std::string text;
+        for (const auto &backend : m_backends) {
+            if (!backend->ready())
+                continue;
+            if (!text.empty())
+                text += "   \u00b7   ";
+            text += backend->statusLine();
+        }
+        if (text.empty()) {
             m_root->status()->setText(tr("Waiting for your phone. Keep KDE Connect open."));
             if (m_threads.empty())
                 m_root->setEmptyText(
                         tr("Your phone connects over Wi-Fi. Keep KDE Connect open on it."));
             return;
-        }
-        std::string text = m_phone->phoneName().empty() ? tr("Phone") : m_phone->phoneName();
-        if (m_phone->battery() >= 0)
-            text += " · " + std::to_string(m_phone->battery()) + "%";
-        if (!m_phone->isPaired()) {
-            text += " · ";
-            text += tr("confirm the pairing on your phone");
         }
         m_root->status()->setText(text);
         return;
@@ -1495,10 +1312,8 @@ void MessagesWindow::updateStatus()
     }
     std::string text = status.phone.empty() ? tr("iPhone") : status.phone;
     if (status.battery >= 0)
-        text += " · " + std::to_string(status.battery) + "%";
+        text += " \u00b7 " + std::to_string(status.battery) + "%";
     m_root->status()->setText(text);
     if (m_threads.empty())
-        m_root->setEmptyText(tr("No conversations yet. Messages you receive on the iPhone appear here."));
-}
-
-} // namespace cutefish::messages
+        m_root->setEmptyText(tr("No conversations yet."));
+}} // namespace cutefish::messages

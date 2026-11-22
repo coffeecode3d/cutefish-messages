@@ -24,24 +24,25 @@ Notifier::Notifier(base::EventLoop *loop)
         std::string action;
         if (!message.read(id, action))
             return;
-        const auto found = m_threads.find(id);
-        if (found == m_threads.end())
+        const auto found = m_keys.find(id);
+        if (found == m_keys.end())
             return;
-        const int64_t thread = found->second;
-        m_threads.erase(found);
-        activated(thread);
+        const std::string key = found->second;
+        m_keys.erase(found);
+        activated(key);
     });
     m_closed = m_proxy.onSignal("NotificationClosed", [this](const base::dbus::Message &message) {
         uint32_t id = 0;
         uint32_t reason = 0;
         if (message.read(id, reason))
-            m_threads.erase(id);
+            m_keys.erase(id);
     });
 }
 
 Notifier::~Notifier() = default;
 
-uint32_t Notifier::notify(const std::string &summary, const std::string &body, int64_t threadId)
+uint32_t Notifier::notify(const std::string &summary, const std::string &body,
+                          const std::string &threadKey)
 {
     const auto reply = m_proxy.call("Notify", std::string("Messages"), uint32_t(0),
                                     std::string("org.cutefish.Messages"), summary, body,
@@ -53,7 +54,7 @@ uint32_t Notifier::notify(const std::string &summary, const std::string &body, i
     const auto id = reply.value<uint32_t>(0);
     if (!id || *id == 0)
         return 0;
-    m_threads[*id] = threadId;
+    m_keys[*id] = threadKey;
     return *id;
 }
 
@@ -62,7 +63,7 @@ void Notifier::withdraw(uint32_t id)
     if (id == 0)
         return;
     m_proxy.send("CloseNotification", id);
-    m_threads.erase(id);
+    m_keys.erase(id);
 }
 
 } // namespace cutefish::messages

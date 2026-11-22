@@ -10,9 +10,10 @@
 #include <memory>
 #include <vector>
 
+#include "backend.h"
+#include "base/timer.h"
 #include "messages_client.h"
 #include "notifier.h"
-#include "phone/link.h"
 #include "ui/window.h"
 
 namespace cutefish::ui {
@@ -44,44 +45,27 @@ private:
     void send();
     void updateStatus();
 
-    void phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages);
-    void phoneAttachment(int64_t messageId, std::string path);
-    // Fetches the open thread again when a summary says it has news.
-    void refreshOpenThread();
     void openImage(int64_t messageId, const std::string &path);
-    void openConversation(int64_t threadId);
+    void openConversation(const std::string &key);
     void applyTheme();
-    std::string nameOf(const std::string &address) const;
-    std::string groupName(const std::vector<std::string> &addresses) const;
-    void phoneConversations(std::vector<phone::Conversation> conversations);
-
-    // The summaries arrive in a burst; one refresh follows it.
-    base::Timer m_refresh;
-    // Asks the phone for the conversation list now and then, since it does not
-    // push one when a message is sent from the phone itself.
+    Backend *backendFor(const std::string &service) const;
+    void updateAttachment(int64_t messageId, std::string path);
+    // Asks each service for its list now and then; not every service pushes.
     base::Timer m_sync;
-    std::vector<phone::Conversation> m_pendingConversations;
     // What the conversation pane is showing, so an unchanged thread is not
     // rebuilt and scrolled again.
-    int64_t m_shownThread = 0;
-    // A thread already asked for, so a burst of summaries asks once.
-    int64_t m_requestedThread = 0;
-    // Threads opened here, whose dots should stay cleared even while the
-    // phone's own app has not marked them read.
-    std::set<int64_t> m_readThreads;
+    std::string m_shownKey;
     size_t m_shownCount = 0;
     std::string m_shownLast;
 
     std::unique_ptr<MessagesClient> m_client;
-    std::unique_ptr<phone::PhoneLink> m_phone;
+    std::vector<std::unique_ptr<Backend>> m_backends;
+    std::vector<base::Subscription> m_backendSubscriptions;
     std::unique_ptr<Notifier> m_notifier;
     base::Subscription m_notifierSubscription;
-    // The newest date already announced per thread, so a re-poll is quiet.
-    std::map<int64_t, int64_t> m_notified;
+    // The newest time already announced per thread, so a re-poll is quiet.
+    std::map<std::string, std::string> m_notified;
     bool m_usePhone = false;
-    std::vector<phone::Conversation> m_conversations;
-    std::map<int64_t, std::vector<phone::SmsMessage>> m_phoneThreads;
-    std::vector<base::Subscription> m_phoneSubscriptions;
     std::vector<Thread> m_threads;
     int m_current = -1;
     bool m_demo = false;

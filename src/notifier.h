@@ -26,17 +26,18 @@ public:
     Notifier &operator=(const Notifier &) = delete;
 
     // Returns the notification's id, or 0 when the shell did not take it.
-    uint32_t notify(const std::string &summary, const std::string &body, int64_t threadId);
+    uint32_t notify(const std::string &summary, const std::string &body,
+                    const std::string &threadKey);
     void withdraw(uint32_t id);
 
     // A notification was clicked (or its default action taken).
-    base::Signal<int64_t> activated;
+    base::Signal<std::string> activated;
 
 private:
     base::dbus::Proxy m_proxy;
     base::dbus::Match m_actions;
     base::dbus::Match m_closed;
-    std::map<uint32_t, int64_t> m_threads;
+    std::map<uint32_t, std::string> m_keys;
 };
 
 } // namespace cutefish::messages

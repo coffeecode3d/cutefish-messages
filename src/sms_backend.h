@@ -45,6 +45,9 @@ private:
     std::vector<Thread> m_threads;
     std::set<int64_t> m_requested;
     std::set<int64_t> m_read;
+    // A burst of summaries rebuilds the list once.
+    base::Timer m_coalesce;
+    std::vector<base::Subscription> m_subscriptions;
 };
 
 } // namespace cutefish::messages

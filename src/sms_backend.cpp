@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <ctime>
 
 namespace cutefish::messages {
@@ -71,10 +73,11 @@ Message messageOf(const phone::SmsMessage &sms)
 
 SmsBackend::SmsBackend(base::EventLoop *loop)
     : m_phone(loop)
+    , m_coalesce(loop)
 {
-    m_phone.stateChanged.connect([this] { statusChanged(); });
-    m_phone.conversationsReceived.connect([this](std::vector<phone::Conversation> list) {
-        m_conversations = std::move(list);
+    m_coalesce.setSingleShot(true);
+    m_coalesce.setInterval(std::chrono::milliseconds(60));
+    m_coalesce.onTimeout = [this] {
         rebuild();
         // A thread we already hold that the phone says is newer is fetched again.
         for (const phone::Conversation &conversation : m_conversations) {
@@ -89,8 +92,15 @@ SmsBackend::SmsBackend(base::EventLoop *loop)
             m_phone.requestThread(conversation.threadId);
         }
         threadsChanged();
-    });
-    m_phone.threadReceived.connect([this](int64_t threadId, std::vector<phone::SmsMessage> messages) {
+    };
+    m_subscriptions.push_back(m_phone.stateChanged.connect([this] { statusChanged(); }));
+    m_subscriptions.push_back(m_phone.conversationsReceived.connect(
+            [this](std::vector<phone::Conversation> list) {
+        m_conversations = std::move(list);
+        m_coalesce.start();
+    }));
+    m_subscriptions.push_back(m_phone.threadReceived.connect(
+            [this](int64_t threadId, std::vector<phone::SmsMessage> messages) {
         m_requested.erase(threadId);
         std::sort(messages.begin(), messages.end(),
                   [](const phone::SmsMessage &left, const phone::SmsMessage &right) {
@@ -99,8 +109,9 @@ SmsBackend::SmsBackend(base::EventLoop *loop)
         m_messages[threadId] = std::move(messages);
         rebuild();
         threadsChanged();
-    });
-    m_phone.attachmentReady.connect([this](int64_t messageId, std::string path) {
+    }));
+    m_subscriptions.push_back(m_phone.attachmentReady.connect(
+            [this](int64_t messageId, std::string path) {
         for (auto &[threadId, messages] : m_messages) {
             for (phone::SmsMessage &sms : messages) {
                 if (sms.id == messageId)
@@ -114,11 +125,11 @@ SmsBackend::SmsBackend(base::EventLoop *loop)
             }
         }
         attachmentReady(messageId, std::move(path));
-    });
-    m_phone.contactsChanged.connect([this] {
+    }));
+    m_subscriptions.push_back(m_phone.contactsChanged.connect([this] {
         rebuild();
         threadsChanged();
-    });
+    }));
 }
 
 SmsBackend::~SmsBackend() = default;
