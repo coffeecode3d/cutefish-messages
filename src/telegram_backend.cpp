@@ -277,31 +277,16 @@ void TelegramBackend::handleAuthState(const base::json::Value &state)
         request.insert("ignore_file_names", false);
         sendJson(request);
     } else if (type == "authorizationStateWaitPhoneNumber") {
-        // QR first: the same kind of linking Signal uses, so no typing a code.
-        if (!m_qrRequested) {
-            m_qrRequested = true;
-            base::json::Value request = base::json::Value::object();
-            request.insert("@type", "requestQrCodeAuthentication");
-            request.insert("other_user_ids", base::json::Value::Array());
-            request.insert("@extra", "qr");
-            sendJson(request);
-            setAuth(AuthKind::Other, "Scan the code from Telegram", "");
-        } else {
-            setAuth(AuthKind::Phone, "Enter your phone number",
-                    "Include the country code, for example +1 555 010 0000.");
-        }
+        setAuth(AuthKind::Phone, "Enter your phone number",
+                "Include the country code, for example +1 555 010 0000.");
     } else if (type == "authorizationStateWaitOtherDeviceConfirmation") {
-        m_qrLink = state["link"].toString();
-        setAuth(AuthKind::Other, "Scan the code from Telegram", "");
+        setAuth(AuthKind::Other, "Confirm this sign-in on another Telegram device", "");
     } else if (type == "authorizationStateWaitCode") {
-        m_qrLink.clear();
         setAuth(AuthKind::Code, "Enter the code Telegram sent you", "Check Telegram or your SMS.");
     } else if (type == "authorizationStateWaitPassword") {
-        m_qrLink.clear();
         setAuth(AuthKind::Password, "Enter your two-step verification password", "");
     } else if (type == "authorizationStateReady") {
         m_authorized = true;
-        m_qrLink.clear();
         m_chatsRequested = false;
         setAuth(AuthKind::None, {}, {});
         statusChanged();
@@ -518,11 +503,6 @@ void TelegramBackend::handle(const base::json::Value &object)
     if (type == "error") {
         const std::string message = object["message"].toString();
         std::fprintf(stderr, "telegram: %s\n", message.c_str());
-        if (extra == "qr") {
-            m_qrRequested = false;
-            setAuth(AuthKind::Phone, "Enter your phone number",
-                    "Include the country code, for example +1 555 010 0000.");
-        }
         if (extra.starts_with("history:")) {
             const int64_t chatId = std::strtoll(extra.c_str() + 8, nullptr, 10);
             m_loadedChats.erase(chatId);

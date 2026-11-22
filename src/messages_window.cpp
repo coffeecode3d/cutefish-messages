@@ -2040,13 +2040,6 @@ void MessagesWindow::showTelegramAuth()
 {
     if (!m_telegram)
         return;
-    if (!m_telegram->qrLink().empty()) {
-        m_root->hideAuth();
-        m_root->showQr(tr("Link Telegram"),
-                       tr("Telegram \u203a Settings \u203a Devices \u203a Link Desktop Device"),
-                       m_telegram->qrLink());
-        return;
-    }
     m_root->hideQr();
     const bool secret = m_telegram->authKind() == TelegramBackend::AuthKind::Password;
     m_root->showAuth(m_telegram->authPrompt(), m_telegram->authDetail(), secret,

@@ -57,7 +57,6 @@ public:
                 || m_authKind == AuthKind::Password;
     }
     AuthKind authKind() const { return m_authKind; }
-    std::string qrLink() const { return m_qrLink; }
     std::string authPrompt() const { return m_authPrompt; }
     std::string authDetail() const { return m_authDetail; }
     void submitAuth(const std::string &value);
@@ -102,8 +101,6 @@ private:
     AuthKind m_authKind = AuthKind::None;
     std::string m_authPrompt;
     std::string m_authDetail;
-    std::string m_qrLink;
-    bool m_qrRequested = false;
     std::string m_apiId;
     std::string m_apiHash;
     std::string m_dataDir;

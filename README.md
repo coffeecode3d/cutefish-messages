@@ -77,9 +77,9 @@ That installs the app, its desktop entry and icon.
   <https://my.telegram.org> (API development tools), then put them in
   `~/.config/cutefish/messages/telegram.conf` as `api_id=...` and
   `api_hash=...` (or set `CUTEFISH_TELEGRAM_API_ID` and
-  `CUTEFISH_TELEGRAM_API_HASH`). Choose **Telegram** in the footer and scan
-  the code from *Telegram → Settings → Devices → Link Desktop Device*; the
-  app asks for your two-step password if the account has one.
+  `CUTEFISH_TELEGRAM_API_HASH`). Choose **Telegram** in the footer, enter
+  your phone number, the code Telegram sends, and your two-step password if
+  the account has one.
 - Switch services from the footer at any time. **All conversations** mixes
   them, with each preview labelled by its service.
 - Attach a picture or file with the **+** beside the composer. Click a picture
