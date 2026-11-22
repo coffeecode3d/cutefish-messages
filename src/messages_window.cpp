@@ -235,7 +235,11 @@ public:
         m_snippet->setText(thread.snippet);
         m_snippet->setFontSize(theme.smallFontSize());
         m_snippet->setFontFamily(theme.fontFamily);
-        m_snippet->setColor(ui::ColorId::DisabledText);
+        // The preview has to read against the light glass in dark mode, where
+        // the disabled colour nearly disappears.
+        m_snippet->setColor(theme.darkMode
+                                    ? ui::ColorRecipe(ui::Color::rgb(0xFFFFFF).withAlpha(0.78))
+                                    : ui::ColorRecipe(ui::ColorId::DisabledText));
         m_unread = thread.unread > 0;
         m_time->setText(timeOf(thread.lastTimestamp));
         m_time->setFontSize(theme.smallFontSize());
