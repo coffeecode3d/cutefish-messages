@@ -58,6 +58,17 @@ hex.
 See `docs/protocol-notes.md` for the packet details, the capabilities the phone
 requires before it answers, and the mistakes worth not repeating.
 
+## Known limits
+
+- Only SMS and MMS are visible. RCS chats live in the phone's own store and are
+  not part of the provider KDE Connect reads, so they never appear here.
+- Unread dots are cleared locally when a conversation is opened; the protocol
+  has no packet to mark a thread read on the phone.
+- Android only lets an app send MMS when it is the default SMS app. Group
+  replies work when KDE Connect has that role; otherwise the phone ignores them.
+- Pinned conversations are a phone-app notion and are not carried by the
+  protocol.
+
 ## Status
 
 Android over the KDE Connect protocol is in use daily. The iPhone backend
