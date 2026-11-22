@@ -109,6 +109,7 @@ bool SignalBackend::start(std::string &error)
                 m_account = stringOr(first["aci"]);
             m_linked = !m_account.empty();
             if (m_linked) {
+                loadContacts();
                 beginReceive();
                 statusChanged();
             }
@@ -152,11 +153,50 @@ void SignalBackend::link(LinkUri onUri, LinkDone done)
                 m_account = stringOr(account["aci"]);
             m_linked = !m_account.empty();
             if (m_linked) {
+                loadContacts();
                 beginReceive();
                 statusChanged();
             }
             done(m_linked, m_linked ? std::string() : "Signal did not return an account.");
         });
+    });
+}
+
+void SignalBackend::loadContacts()
+{
+    base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
+    m_rpc.call("listContacts", std::move(params),
+               [this](bool ok, const base::json::Value &contacts, const std::string &) {
+        if (!ok || !contacts.isArray())
+            return;
+        for (size_t i = 0; i < contacts.size(); ++i) {
+            const base::json::Value &contact = contacts[i];
+            const std::string number = stringOr(contact["number"]);
+            if (number.empty())
+                continue;
+            std::string name = stringOr(contact["name"]);
+            if (name.empty())
+                name = stringOr(contact["profileName"]);
+            if (name.empty())
+                name = stringOr(contact["nickName"]);
+            if (!name.empty())
+                m_contactNames[number] = name;
+        }
+        // A stored thread may still carry the number it was created with.
+        bool changed = false;
+        for (auto &[key, thread] : m_threads) {
+            if (thread.group)
+                continue;
+            const auto found = m_contactNames.find(thread.address);
+            if (found == m_contactNames.end() || thread.name == found->second)
+                continue;
+            thread.name = found->second;
+            m_store.saveThread(thread);
+            changed = true;
+        }
+        if (changed)
+            threadsChanged();
     });
 }
 
@@ -322,6 +362,11 @@ Thread &SignalBackend::threadFor(const std::string &key, const std::string &name
         thread.group = group;
         thread.name = name.empty() ? key : name;
         thread.address = key.starts_with("signal:g:") ? key.substr(9) : key.substr(7);
+        if (!group) {
+            const auto known = m_contactNames.find(thread.address);
+            if (known != m_contactNames.end())
+                thread.name = known->second;
+        }
     }
     return thread;
 }

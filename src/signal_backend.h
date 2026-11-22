@@ -44,6 +44,7 @@ public:
 private:
     bool ensureDaemon(std::string &error);
     void beginReceive();
+    void loadContacts();
     void handleNotification(const base::json::Value &params);
     void handleEnvelope(const base::json::Value &envelope);
     Thread &threadFor(const std::string &key, const std::string &name, bool group);
@@ -62,6 +63,7 @@ private:
     bool m_linked = false;
     bool m_receiving = false;
     std::map<std::string, Thread> m_threads;
+    std::map<std::string, std::string> m_contactNames;
     std::vector<base::Subscription> m_subscriptions;
 };
 

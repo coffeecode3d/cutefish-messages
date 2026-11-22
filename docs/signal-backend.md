@@ -61,8 +61,8 @@ queryable history API.
 Implemented: the JSON-RPC client, daemon spawning, linking through
 `startLink`/`finishLink`, the QR shown in a sheet (libqrencode), incoming and
 outgoing messages into the merged thread list, sends, read receipts, group
-threads from `listGroups`, and a SQLite store (`signal.db`) for threads,
-messages, read state and unread marks.
+threads from `listGroups`, contact names from `listContacts`, and a SQLite
+store (`signal.db`) for threads, messages, read state and unread marks.
 
-Next: attachments, typing indicators in the UI, contact names from
-`listContacts`, and the service enable/disable state in the config.
+Next: attachments, typing indicators in the UI, and the service
+enable/disable state in the config.
