@@ -2274,7 +2274,10 @@ void MessagesWindow::restoreSubtitle()
         return;
     }
     const Thread &thread = m_threads[size_t(m_current)];
-    m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
+    m_root->subtitle()->setText(thread.group
+                                        ? (thread.channel ? tr("Channel")
+                                                          : tr("Group conversation"))
+                                        : std::string());
 }
 
 void MessagesWindow::noteTyping()

@@ -42,6 +42,7 @@ struct Thread
     // The latest message's text, for the list.
     std::string snippet;
     bool group = false;
+    bool channel = false;
     bool replyReady = true;
     bool starred = false;
     int unread = 0;

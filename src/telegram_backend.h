@@ -82,11 +82,13 @@ private:
     void handleAuthState(const base::json::Value &state);
     void setAuth(AuthKind kind, std::string prompt, std::string detail);
     void loadChats();
+    void loadChatsPage();
+    void requestChats();
     void syncChat(const base::json::Value &chat);
     void requestUser(int64_t userId);
     void requestAvatar(int64_t chatId, const base::json::Value &photo);
     void loadHistory(int64_t chatId);
-    void addMessage(const base::json::Value &message);
+    void addMessage(const base::json::Value &message, bool history = false);
     Message messageFrom(const base::json::Value &message, bool group) const;
     std::string senderName(const base::json::Value &sender) const;
     std::string bodyOf(const base::json::Value &content, bool &image,
@@ -118,6 +120,8 @@ private:
     std::map<int64_t, std::string> m_userNames;
     std::map<int64_t, int64_t> m_privateChatByUser;
     std::map<int64_t, int64_t> m_lastReadOutbox;
+    std::map<int64_t, int64_t> m_senderIds;
+    int m_chatLoadTries = 0;
     std::map<int64_t, PendingFile> m_pendingFiles;
 };
 

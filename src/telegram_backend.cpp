@@ -506,8 +506,11 @@ void TelegramBackend::handle(const base::json::Value &object)
         bool changed = false;
         for (auto &[chatId, thread] : m_threads) {
             for (Message &message : thread.messages) {
-                if (message.sender.empty() || message.sender == "Member")
+                const auto known = m_senderIds.find(message.id);
+                if (known == m_senderIds.end() || known->second != userId)
                     continue;
+                message.sender = name;
+                changed = true;
             }
         }
         if (changed)
@@ -521,9 +524,10 @@ void TelegramBackend::handle(const base::json::Value &object)
             return;
         const base::json::Value &messages = object["messages"];
         for (size_t i = 0; i < messages.size(); ++i)
-            addMessage(messages[i]);
+            addMessage(messages[i], true);
         std::sort(thread->messages.begin(), thread->messages.end(),
                   [](const Message &left, const Message &right) { return left.id < right.id; });
+        std::fprintf(stderr, "telegram: history %zu messages\n", messages.size());
         if (!thread->messages.empty()) {
             const Message &last = thread->messages.back();
             thread->snippet = last.body.empty()
@@ -539,6 +543,10 @@ void TelegramBackend::handle(const base::json::Value &object)
     if (type == "chat" && extra.starts_with("chat:")) {
         syncChat(object);
         threadsChanged();
+        return;
+    }
+    if (type == "ok" && extra == "loadchats") {
+        loadChatsPage();
         return;
     }
     if (type == "chats" && extra == "chats") {
@@ -560,6 +568,10 @@ void TelegramBackend::handle(const base::json::Value &object)
             setAuth(AuthKind::Phone, "Enter your phone number",
                     "Include the country code, for example +1 555 010 0000.");
         }
+        if (extra == "loadchats") {
+            // 404 means every chat list page was loaded; either way list them.
+            requestChats();
+        }
         if (extra.starts_with("history:")) {
             const int64_t chatId = std::strtoll(extra.c_str() + 8, nullptr, 10);
             m_loadedChats.erase(chatId);
@@ -573,21 +585,38 @@ void TelegramBackend::loadChats()
     if (m_chatsRequested || !m_authorized)
         return;
     m_chatsRequested = true;
+    m_chatLoadTries = 0;
+    // Show whatever is already cached, then load the rest in the background.
+    requestChats();
+    loadChatsPage();
+}
+
+void TelegramBackend::loadChatsPage()
+{
+    if (++m_chatLoadTries > 20) {
+        requestChats();
+        return;
+    }
     base::json::Value list = base::json::Value::object();
     list.insert("@type", "chatListMain");
+    base::json::Value request = base::json::Value::object();
+    request.insert("@type", "loadChats");
+    request.insert("chat_list", list);
+    request.insert("limit", 200);
+    request.insert("@extra", "loadchats");
+    sendJson(request);
+}
 
-    base::json::Value load = base::json::Value::object();
-    load.insert("@type", "loadChats");
-    load.insert("chat_list", list);
-    load.insert("limit", 100);
-    sendJson(load);
-
-    base::json::Value chats = base::json::Value::object();
-    chats.insert("@type", "getChats");
-    chats.insert("chat_list", list);
-    chats.insert("limit", 100);
-    chats.insert("@extra", "chats");
-    sendJson(chats);
+void TelegramBackend::requestChats()
+{
+    base::json::Value list = base::json::Value::object();
+    list.insert("@type", "chatListMain");
+    base::json::Value request = base::json::Value::object();
+    request.insert("@type", "getChats");
+    request.insert("chat_list", list);
+    request.insert("limit", 200);
+    request.insert("@extra", "chats");
+    sendJson(request);
 }
 
 void TelegramBackend::refresh()
@@ -609,6 +638,8 @@ void TelegramBackend::syncChat(const base::json::Value &chat)
         thread->name = title;
     const std::string type = chat["type"]["@type"].toString();
     thread->group = type == "chatTypeBasicGroup" || type == "chatTypeSupergroup";
+    thread->channel = type == "chatTypeSupergroup"
+            && chat["type"]["is_channel"].toBool(false);
     thread->unread = int(chat["unread_count"].toInt());
     if (type == "chatTypePrivate" || type == "chatTypeSecret") {
         const int64_t userId = chat["type"]["user_id"].toInt();
@@ -822,45 +853,63 @@ Message TelegramBackend::messageFrom(const base::json::Value &message, bool grou
     return result;
 }
 
-void TelegramBackend::addMessage(const base::json::Value &message)
+void TelegramBackend::addMessage(const base::json::Value &message, bool history)
 {
     const int64_t chatId = message["chat_id"].toInt();
     Thread *thread = threadFor(chatId);
     if (!thread)
         return;
-    const Message parsed = messageFrom(message, thread->group);
+    Message parsed = messageFrom(message, thread->group);
+    if (thread->channel)
+        parsed.sender.clear();
     const std::string type = message["content"]["@type"].toString();
     if (type.starts_with("messageChat") || type == "messageCustomServiceAction")
         return;
-    if (parsed.body.empty() && parsed.attachmentPath.empty())
-        return;
 
-    Message stored = parsed;
-    const bool had = std::any_of(thread->messages.begin(), thread->messages.end(),
-                                 [&](const Message &known) { return known.id == stored.id; });
-    if (!had)
-        thread->messages.push_back(stored);
-
-    // The picture may still be downloading.
     bool image = false;
     base::json::Value file;
     std::string fileName;
     bodyOf(message["content"], image, file, fileName);
-    if (image && file.isObject() && stored.attachmentPath.empty())
-        requestFile(file, chatId, stored.id, false);
-    if (thread->messages.size() > 1) {
-        std::sort(thread->messages.begin(), thread->messages.end(),
-                  [](const Message &left, const Message &right) { return left.id < right.id; });
+    // A picture with no caption is still a message, even before it downloads.
+    if (parsed.body.empty() && !image && fileName.empty())
+        return;
+
+    const bool had = std::any_of(thread->messages.begin(), thread->messages.end(),
+                                 [&](const Message &known) { return known.id == parsed.id; });
+    if (!had)
+        thread->messages.push_back(parsed);
+    if (had) {
+        for (Message &known : thread->messages) {
+            if (known.id != parsed.id)
+                continue;
+            // A later update may not carry the downloaded file's path.
+            if (parsed.attachmentPath.empty())
+                parsed.attachmentPath = known.attachmentPath;
+            known = parsed;
+        }
     }
-    if (stored.body.empty())
+
+    const base::json::Value &sender = message["sender_id"];
+    if (sender["@type"].toString() == "messageSenderUser") {
+        const int64_t userId = sender["user_id"].toInt();
+        m_senderIds[parsed.id] = userId;
+        requestUser(userId);
+    }
+
+    if (image && file.isObject() && parsed.attachmentPath.empty())
+        requestFile(file, chatId, parsed.id, false);
+    std::sort(thread->messages.begin(), thread->messages.end(),
+              [](const Message &left, const Message &right) { return left.id < right.id; });
+    if (parsed.body.empty())
         thread->snippet = image ? "Photo" : fileName;
     else
-        thread->snippet = stored.body;
-    thread->lastTimestamp = stored.timestamp;
-    if (!stored.outgoing) {
+        thread->snippet = parsed.body;
+    thread->lastTimestamp = parsed.timestamp;
+
+    if (!history && !parsed.outgoing) {
         if (chatId == m_openChat) {
             base::json::Value::Array ids;
-            ids.push_back(base::json::Value(stored.id));
+            ids.push_back(base::json::Value(parsed.id));
             base::json::Value request = base::json::Value::object();
             request.insert("@type", "viewMessages");
             request.insert("chat_id", chatId);
@@ -872,7 +921,8 @@ void TelegramBackend::addMessage(const base::json::Value &message)
             thread->unread = std::max(1, thread->unread + 1);
         }
     }
-    threadsChanged();
+    if (!history)
+        threadsChanged();
 }
 
 bool TelegramBackend::send(const Thread &thread, const std::string &body, std::string &error)
