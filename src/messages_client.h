@@ -41,6 +41,7 @@ struct Thread
     int64_t threadId = 0;
     // Who a reply goes to.
     std::string address;
+    std::vector<std::string> addresses;
     std::vector<Message> messages;
 };
 

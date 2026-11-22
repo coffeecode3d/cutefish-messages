@@ -833,6 +833,7 @@ private:
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
     : m_refresh(loop)
+    , m_sync(loop)
     , m_demo(demo)
     , m_client(std::make_unique<MessagesClient>(loop))
 {
@@ -901,6 +902,12 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
                     [this](std::string text) { m_root->status()->setText(text); }));
             m_phoneSubscriptions.push_back(
                     m_phone->contactsChanged.connect([this] { reloadFromPhone(); }));
+            m_sync.setInterval(std::chrono::seconds(20));
+            m_sync.onTimeout = [this] {
+                if (m_phone && m_phone->isConnected())
+                    m_phone->requestConversations();
+            };
+            m_sync.start();
             reloadFromPhone();
             updateStatus();
         } else {
@@ -1004,6 +1011,9 @@ void MessagesWindow::reloadFromPhone()
         m_threads.push_back(std::move(thread));
     }
 
+    // reload() keeps rows whose index did not change, which is exactly the
+    // case when a conversation moves: drop them so every row rebinds.
+    m_root->sidebar()->setRowCount(0);
     m_root->sidebar()->setRowCount(m_threads.size());
     m_root->sidebar()->reload();
 
@@ -1156,7 +1166,10 @@ void MessagesWindow::send()
     }
     if (m_usePhone) {
         std::string error;
-        if (!m_phone->sendSms(thread.address, body, error)) {
+        std::vector<std::string> recipients = thread.addresses;
+        if (recipients.empty())
+            recipients.push_back(thread.address);
+        if (!m_phone->sendSms(recipients, body, error)) {
             m_root->status()->setText(error);
             return;
         }
@@ -1171,7 +1184,9 @@ void MessagesWindow::send()
         thread.messages.push_back(messageOf(sent));
         thread.snippet = body;
         thread.lastTimestamp = timestampOf(sent.date);
-        // The list follows the phone: this conversation is now the newest.
+        // The list follows the phone: this conversation is now the newest,
+        // both here and in the link's own cache, so a later summary agrees.
+        m_phone->noteSent(thread.threadId, body, sent.date);
         for (phone::Conversation &conversation : m_conversations) {
             if (conversation.threadId == thread.threadId) {
                 conversation.date = sent.date;
@@ -1181,6 +1196,8 @@ void MessagesWindow::send()
         }
         m_root->composer()->setText({});
         reloadFromPhone();
+        // It is the newest now; show the list from the top so it is in sight.
+        m_root->sidebar()->scrollToRow(0);
         return;
     }
     std::string error;

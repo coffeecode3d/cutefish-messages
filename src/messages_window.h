@@ -50,6 +50,9 @@ private:
 
     // The summaries arrive in a burst; one refresh follows it.
     base::Timer m_refresh;
+    // Asks the phone for the conversation list now and then, since it does not
+    // push one when a message is sent from the phone itself.
+    base::Timer m_sync;
     std::vector<phone::Conversation> m_pendingConversations;
     // What the conversation pane is showing, so an unchanged thread is not
     // rebuilt and scrolled again.

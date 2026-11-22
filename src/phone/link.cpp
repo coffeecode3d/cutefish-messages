@@ -687,8 +687,15 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
         message.type = int(entry["type"].toInt());
         message.read = entry["read"].toInt(1) != 0;
         const base::json::Value &addresses = entry["addresses"];
-        if (addresses.isArray() && addresses.size() > 0)
-            message.address = addresses[size_t(0)]["address"].toString();
+        if (addresses.isArray()) {
+            for (size_t a = 0; a < addresses.size(); ++a) {
+                const std::string value = addresses[a]["address"].toString();
+                if (!value.empty())
+                    message.addresses.push_back(value);
+            }
+        }
+        if (!message.addresses.empty())
+            message.address = message.addresses.front();
         const base::json::Value &attachments = entry["attachments"];
         if (attachments.isArray()) {
             for (size_t a = 0; a < attachments.size(); ++a) {
@@ -752,6 +759,7 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
             continue;
         conversation.threadId = message.threadId;
         conversation.address = message.address;
+        conversation.addresses = message.addresses;
         conversation.snippet = !message.body.empty()
                 ? message.body
                 : (message.attachments.empty() ? std::string() : std::string("Photo"));
@@ -1041,20 +1049,38 @@ void PhoneLink::requestThread(int64_t threadId)
     sendPacket("kdeconnect.sms.request_conversation", std::move(body));
 }
 
-bool PhoneLink::sendSms(const std::string &address, const std::string &body, std::string &error)
+void PhoneLink::noteSent(int64_t threadId, const std::string &body, int64_t date)
+{
+    Conversation &conversation = m_conversations[threadId];
+    conversation.threadId = threadId;
+    conversation.date = date;
+    conversation.snippet = body;
+    conversation.type = 2;
+    conversation.read = true;
+}
+
+bool PhoneLink::sendSms(const std::vector<std::string> &addresses,
+                        const std::string &body, std::string &error)
 {
     if (!m_ssl) {
         error = "The phone is not connected.";
         return false;
     }
-    base::json::Value entry = base::json::Value::object();
-    entry.insert("address", address);
-    base::json::Value::Array addresses;
-    addresses.push_back(std::move(entry));
+    base::json::Value::Array entries;
+    for (const std::string &address : addresses) {
+        base::json::Value entry = base::json::Value::object();
+        entry.insert("address", address);
+        entries.push_back(std::move(entry));
+    }
+    if (entries.empty()) {
+        error = "This conversation has no address.";
+        return false;
+    }
 
-    std::fprintf(stderr, "phone: sending to %s: \"%s\"\n", address.c_str(), body.c_str());
+    std::fprintf(stderr, "phone: sending to %zu address(es): \"%s\"\n", entries.size(),
+                 body.c_str());
     base::json::Value packetBody = base::json::Value::object();
-    packetBody.insert("addresses", base::json::Value(std::move(addresses)));
+    packetBody.insert("addresses", base::json::Value(std::move(entries)));
     packetBody.insert("messageBody", body);
     packetBody.insert("version", 2);
     if (!sendPacket("kdeconnect.sms.request", std::move(packetBody))) {

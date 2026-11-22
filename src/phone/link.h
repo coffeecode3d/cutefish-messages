@@ -38,6 +38,8 @@ struct SmsMessage
     int64_t id = 0;
     int64_t threadId = 0;
     std::string address;
+    // Everyone the message went to or came from; more than one is a group.
+    std::vector<std::string> addresses;
     std::string body;
     // Epoch milliseconds.
     int64_t date = 0;
@@ -54,6 +56,7 @@ struct Conversation
 {
     int64_t threadId = 0;
     std::string address;
+    std::vector<std::string> addresses;
     std::string snippet;
     int64_t date = 0;
     int type = 0;
@@ -97,7 +100,11 @@ public:
     // The contact's name for a number, or empty when it is not in the book.
     std::string nameFor(const std::string &address) const;
     // Sends through the phone's SIM. False when there is no link.
-    bool sendSms(const std::string &address, const std::string &body, std::string &error);
+    bool sendSms(const std::vector<std::string> &addresses, const std::string &body,
+                 std::string &error);
+    // Records a message we just sent, so a later summary from the phone cannot
+    // put the conversation back where it was.
+    void noteSent(int64_t threadId, const std::string &body, int64_t date);
 
     // Connection, pairing or battery changed.
     base::Signal<> stateChanged;
