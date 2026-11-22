@@ -50,6 +50,7 @@ public:
 
     // Signing in is a few questions: phone number, code, then two-step
     // password if the account has one.
+    bool configured() const { return !m_apiId.empty() && !m_apiHash.empty(); }
     bool authenticating() const { return m_authKind != AuthKind::None; }
     bool needsAuth() const
     {

@@ -1003,6 +1003,7 @@ public:
         , m_field(addChild<ui::TextField>())
         , m_go(addChild<ui::Button>(tr("Continue")))
         , m_cancel(addChild<ui::Button>(tr("Cancel")))
+        , m_open(addChild<ui::Button>(tr("Open my.telegram.org")))
     {
         m_title->setFontSize(ui::Theme::current().fontSize() + 4);
         m_title->setFadesWhenDisabled(false);
@@ -1014,6 +1015,8 @@ public:
         m_field->onAccepted = [this] { submit(); };
         m_go->onClicked = [this] { submit(); };
         m_cancel->onClicked = [this] { setVisible(false); };
+        m_open->onClicked = [] { openLink("https://my.telegram.org"); };
+        m_open->setVisible(false);
         setVisible(false);
     }
 
@@ -1023,6 +1026,11 @@ public:
 
     void show(const std::string &prompt, const std::string &detail, bool secret, bool waiting)
     {
+        m_help = false;
+        m_field->setVisible(true);
+        m_go->setVisible(true);
+        m_open->setVisible(false);
+        m_cancel->setText(tr("Cancel"));
         m_prompt->setText(prompt);
         m_detail->setText(detail);
         m_field->setEchoMode(secret ? ui::TextField::EchoMode::Password
@@ -1039,20 +1047,38 @@ public:
         requestPaint();
     }
 
+    // When Telegram has no API credentials yet: what to do, in plain words.
+    void showHelp(const std::string &detail)
+    {
+        m_help = true;
+        m_prompt->setText(tr("Telegram needs your own API credentials"));
+        m_detail->setText(detail);
+        m_field->setVisible(false);
+        m_go->setVisible(false);
+        m_open->setVisible(true);
+        m_cancel->setText(tr("Close"));
+        setVisible(true);
+        setFocus();
+        requestLayout();
+        requestPaint();
+    }
+
     void hide() { setVisible(false); }
 
 protected:
     void layout() override
     {
         const double width = std::min(440.0, geometry().width - 80);
-        const double height = 236;
+        const double height = m_help ? 330 : 236;
         m_card = {(geometry().width - width) / 2, (geometry().height - height) / 2, width, height};
         m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 28});
         m_prompt->setGeometry({m_card.x + 26, m_card.y + 56, width - 52, 22});
-        m_detail->setGeometry({m_card.x + 26, m_card.y + 80, width - 52, 34});
+        m_detail->setGeometry({m_card.x + 26, m_card.y + 80, width - 52,
+                               m_help ? 170.0 : 34.0});
         m_field->setGeometry({m_card.x + 26, m_card.y + 124, width - 52, 36});
         m_go->setGeometry({m_card.x + width - 134, m_card.y + height - 50, 100, 32});
         m_cancel->setGeometry({m_card.x + width - 244, m_card.y + height - 50, 100, 32});
+        m_open->setGeometry({m_card.x + 26, m_card.y + height - 50, 190, 32});
     }
 
     void paint(ui::Painter &painter) override
@@ -1093,6 +1119,8 @@ private:
     ui::TextField *m_field;
     ui::Button *m_go;
     ui::Button *m_cancel;
+    ui::Button *m_open;
+    bool m_help = false;
     ui::RectF m_card;
 };
 
@@ -1425,6 +1453,14 @@ public:
         m_auth->show(prompt, detail, secret, waiting);
     }
     void hideAuth() { m_auth->hide(); }
+    void showTelegramHelp()
+    {
+        m_auth->showHelp(tr("Telegram asks every app for its own API id and hash.\n\n"
+                            "Create yours once at my.telegram.org (API development tools), then save them in\n"
+                            "~/.config/cutefish/messages/telegram.conf\n\n"
+                            "api_id=...\napi_hash=...\n\n"
+                            "Press Telegram again to sign in."));
+    }
     void showQr(const std::string &title, const std::string &hint, const std::string &uri)
     {
         m_qr->show(title, hint, uri);
@@ -2001,6 +2037,10 @@ void MessagesWindow::ensureTelegram()
     if (m_telegram)
         return;
     auto telegram = std::make_unique<TelegramBackend>(base::EventLoop::current());
+    if (!telegram->configured()) {
+        m_root->showTelegramHelp();
+        return;
+    }
     std::string error;
     if (!telegram->start(error)) {
         m_root->status()->setText(error);
