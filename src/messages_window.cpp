@@ -537,11 +537,14 @@ public:
     {
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
+        setClipsChildren(true);
+        setChildClipRadius(24);
         m_sidebarTitle->setFontSize(ui::Theme::current().fontSize() + 3);
         m_sidebarTitle->setFadesWhenDisabled(false);
         m_sidebar->setRowHeight(56);
         m_sidebar->setClipsChildren(true);
-        m_sidebar->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AlwaysOff);
+        m_sidebar->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
+        m_sidebar->setVerticalBarPadding(4, 4);
         m_sidebar->createItem = [] { return std::make_unique<SidebarRow>(); };
         m_sidebar->bindItem = [this](ui::View *item, size_t row) {
             auto *sidebar = static_cast<SidebarRow *>(item);
@@ -552,7 +555,8 @@ public:
             sidebar->onClicked = [this, index] { m_window.selectThread(index); };
         };
 
-        m_messages->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AlwaysOff);
+        m_messages->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
+        m_messages->setVerticalBarPadding(6, 6);
         m_messages->setBarsBelowContent(false);
         m_scrollToEnd.setSingleShot(true);
         m_scrollToEnd.setInterval(std::chrono::milliseconds(30));
@@ -580,6 +584,11 @@ public:
         m_status->setFontSize(ui::Theme::current().smallFontSize());
         m_status->setColor(ui::ColorId::DisabledText);
         m_status->setFadesWhenDisabled(false);
+    }
+
+    double sidebarWidth() const
+    {
+        return std::clamp(geometry().width * 0.30, 220.0, 300.0);
     }
 
     void setEmptyText(const std::string &text)
@@ -610,7 +619,7 @@ protected:
     void paint(ui::Painter &painter) override
     {
         const ui::Theme &theme = ui::Theme::current();
-        constexpr double kSidebar = 280;
+        const double kSidebar = sidebarWidth();
         // The window body is rounded by the compositor; clip what we paint to
         // the same shape so no fill shows past it at the corners.
         painter.clipRoundedRect({-1, -1, geometry().width + 2, geometry().height + 2}, 25);
@@ -636,25 +645,30 @@ protected:
     {
         const double width = geometry().width;
         const double height = geometry().height;
-        constexpr double kSidebar = 280;
+        const double kSidebar = sidebarWidth();
         constexpr double kStatus = 28;
         constexpr double kComposer = 56;
 
+        // The window's glass covers the whole body, whatever size it is now.
+        m_window.setBackgroundBlur({0, 0, width, height}, 24);
         m_header->setGeometry({0, 0, width, 44});
         m_viewer->setGeometry({0, 0, width, height});
-        m_sidebarTitle->setGeometry({124, 11, kSidebar - 140, 22});
+        m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
         m_sidebar->setGeometry({0, 44, kSidebar, height - kStatus - 44});
         const double left = kSidebar;
         const double right = width - kSidebar;
-        m_title->setGeometry({left + 18, 10, right - 140, 24});
-        m_subtitle->setGeometry({left + 18, 32, right - 140, 12});
+        m_title->setGeometry({left + 18, 10, std::max(0.0, right - 140), 24});
+        m_subtitle->setGeometry({left + 18, 32, std::max(0.0, right - 140), 12});
         const double listTop = 52;
         const double listBottom = height - kStatus - kComposer - 8;
-        m_messages->setGeometry({left + 8, listTop, right - 16, std::max(0.0, listBottom - listTop)});
-        m_empty->setGeometry({left + 24, listTop, right - 48, std::max(0.0, listBottom - listTop)});
-        m_composer->setGeometry({left + 16, height - kStatus - kComposer + 10, right - 74, 36});
+        m_messages->setGeometry({left + 8, listTop, std::max(0.0, right - 24),
+                                 std::max(0.0, listBottom - listTop)});
+        m_empty->setGeometry({left + 24, listTop, std::max(0.0, right - 48),
+                              std::max(0.0, listBottom - listTop)});
+        m_composer->setGeometry({left + 16, height - kStatus - kComposer + 10,
+                                 std::max(0.0, right - 74), 36});
         m_send->setGeometry({width - 56, height - kStatus - kComposer + 12, 32, 32});
-        m_status->setGeometry({left + 18, height - kStatus + 4, right - 36, 20});
+        m_status->setGeometry({left + 18, height - kStatus + 4, std::max(0.0, right - 36), 20});
     }
 
 private:
@@ -831,13 +845,18 @@ void MessagesWindow::reloadFromPhone()
     m_root->sidebar()->setRowCount(m_threads.size());
     m_root->sidebar()->reload();
 
-    m_current = -1;
     for (int index = 0; index < int(m_threads.size()); ++index) {
-        if (m_threads[size_t(index)].threadId == selected) {
-            selectThread(index);
+        if (m_threads[size_t(index)].threadId != selected)
+            continue;
+        if (index == m_current) {
+            m_root->title()->setText(m_threads[size_t(index)].name);
+            m_root->sidebar()->reload();
             return;
         }
+        selectThread(index);
+        return;
     }
+    m_current = -1;
     if (!m_threads.empty()) {
         selectThread(0);
         return;
@@ -863,6 +882,8 @@ void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessa
               [](const phone::SmsMessage &left, const phone::SmsMessage &right) {
                   return left.date < right.date;
               });
+    if (m_requestedThread == threadId)
+        m_requestedThread = 0;
     m_phoneThreads[threadId] = std::move(messages);
     if (m_current >= 0 && m_current < int(m_threads.size())
         && m_threads[size_t(m_current)].threadId == threadId) {
@@ -912,8 +933,11 @@ void MessagesWindow::selectThread(int index)
     else
         m_root->composer()->setPlaceholder(tr("Group replies are not in this version yet"));
     if (m_usePhone) {
-        if (thread.messages.empty() && thread.threadId != 0 && m_phone)
+        if (thread.messages.empty() && thread.threadId != 0 && m_phone
+            && m_requestedThread != thread.threadId) {
+            m_requestedThread = thread.threadId;
             m_phone->requestThread(thread.threadId);
+        }
     } else if (!m_demo) {
         m_client->markRead(thread);
     }

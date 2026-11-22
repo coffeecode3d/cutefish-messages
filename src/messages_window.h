@@ -51,6 +51,8 @@ private:
     // What the conversation pane is showing, so an unchanged thread is not
     // rebuilt and scrolled again.
     int64_t m_shownThread = 0;
+    // A thread already asked for, so a burst of summaries asks once.
+    int64_t m_requestedThread = 0;
     size_t m_shownCount = 0;
     std::string m_shownLast;
 
