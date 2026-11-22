@@ -19,6 +19,7 @@
 namespace cutefish::ui {
 class Label;
 class ListView;
+class Menu;
 class TextField;
 class Button;
 } // namespace cutefish::ui
@@ -42,7 +43,18 @@ private:
 
     void reloadThreads();
     void reloadFromPhone();
+    // Rebuilds the visible list from m_allThreads for the chosen service.
+    void showServiceThreads(const std::string &selected);
+    void showServiceEmpty();
+    void chooseService(const std::string &service);
     void selectThread(int index);
+    void onTyping(const std::string &key, bool typing);
+    void restoreSubtitle();
+    void noteTyping();
+    void showThreadMenu(int index, ui::PointF position);
+    void setThreadRead(const std::string &key, bool unread);
+    void markVisibleRead();
+    void deleteThread(const std::string &key);
     void send();
     void updateStatus();
 
@@ -54,6 +66,11 @@ private:
     void updateAttachment(int64_t messageId, std::string path);
     // Asks each service for its list now and then; not every service pushes.
     base::Timer m_sync;
+    // The peer's typing indicator, and ours back to them.
+    base::Timer m_typingHide;
+    base::Timer m_typingStop;
+    std::string m_typingKey;
+    int64_t m_lastTypingSent = 0;
     // What the conversation pane is showing, so an unchanged thread is not
     // rebuilt and scrolled again.
     std::string m_shownKey;
@@ -65,11 +82,16 @@ private:
     SignalBackend *m_signal = nullptr;
     std::vector<base::Subscription> m_backendSubscriptions;
     std::unique_ptr<Notifier> m_notifier;
+    std::unique_ptr<ui::Menu> m_threadMenu;
     base::Subscription m_notifierSubscription;
     // The newest time already announced per thread, so a re-poll is quiet.
     std::map<std::string, std::string> m_notified;
     bool m_usePhone = false;
+    // Every service's conversations, and the subset the sidebar is showing.
+    std::vector<Thread> m_allThreads;
     std::vector<Thread> m_threads;
+    // "sms", "signal", or "all". New windows start on SMS.
+    std::string m_activeService = "sms";
     int m_current = -1;
     bool m_demo = false;
     std::vector<base::Subscription> m_subscriptions;

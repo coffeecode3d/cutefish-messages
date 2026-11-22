@@ -27,6 +27,7 @@
 #include "ui/button.h"
 #include "ui/icon.h"
 #include "ui/image_view.h"
+#include "ui/menu.h"
 #include "ui/label.h"
 #include "ui/list_view.h"
 #include "ui/keys.h"
@@ -171,11 +172,15 @@ class SidebarRow : public ui::View
 {
 public:
     SidebarRow()
-        : m_avatar(addChild<ui::Label>())
+        : m_avatarImage(addChild<ui::ImageView>())
+        , m_avatar(addChild<ui::Label>())
         , m_name(addChild<ui::Label>())
         , m_snippet(addChild<ui::Label>())
         , m_time(addChild<ui::Label>())
     {
+        m_avatarImage->setCornerRadius(17);
+        m_avatarImage->setFillMode(ui::ImageView::FillMode::PreserveAspectCrop);
+        m_avatarImage->setVisible(false);
         m_avatar->setTextAlignment(ui::Label::TextAlignment::Center);
         m_avatar->setVerticallyCentered(true);
         m_name->setElide(ui::Label::Elide::Right);
@@ -183,12 +188,22 @@ public:
         m_snippet->setElide(ui::Label::Elide::Right);
         m_snippet->setFadesWhenDisabled(false);
         m_time->setFadesWhenDisabled(false);
+        startHold();
     }
 
-    void bind(const Thread &thread, bool selected)
+    void bind(const Thread &thread, bool selected, bool showService)
     {
         const ui::Theme &theme = ui::Theme::current();
         m_selected = selected;
+        if (!thread.avatarPath.empty()) {
+            m_avatarImage->setSource(thread.avatarPath);
+            m_avatarImage->setVisible(true);
+            m_avatar->setVisible(false);
+        } else {
+            m_avatarImage->setSource(std::string());
+            m_avatarImage->setVisible(false);
+            m_avatar->setVisible(true);
+        }
         m_avatar->setText(initialOf(thread.name));
         m_avatar->setFontSize(theme.fontSize() + 1);
         m_avatar->setFontFamily(theme.fontFamily);
@@ -196,7 +211,9 @@ public:
         m_name->setFontSize(theme.fontSize());
         m_name->setFontFamily(theme.fontFamily);
         m_name->setColor(ui::ColorId::Text);
-        m_snippet->setText(thread.snippet);
+        m_snippet->setText(showService && !thread.serviceName.empty()
+                                   ? thread.serviceName + " \u00b7 " + thread.snippet
+                                   : thread.snippet);
         m_snippet->setFontSize(theme.smallFontSize());
         m_snippet->setFontFamily(theme.fontFamily);
         // The preview has to read against the light glass in dark mode, where
@@ -215,18 +232,62 @@ public:
 
     bool acceptsPointer() const override { return true; }
     std::function<void()> onClicked;
+    std::function<void(ui::PointF windowPosition)> onMenu;
+
+    void startHold()
+    {
+        m_hold.setSingleShot(true);
+        m_hold.setInterval(std::chrono::milliseconds(550));
+        m_hold.onTimeout = [this] {
+            if (!m_holding)
+                return;
+            m_holding = false;
+            if (onMenu)
+                onMenu(m_holdPosition);
+        };
+    }
 
 protected:
     void pointerPress(const ui::PointerEvent &event) override
     {
-        if (event.button == ui::MouseButton::Left && onClicked)
+        if (event.button == ui::MouseButton::Right) {
+            m_holding = false;
+            m_hold.stop();
+            if (onMenu)
+                onMenu(mapToWindow(event.position));
+            return;
+        }
+        if (event.button != ui::MouseButton::Left)
+            return;
+        m_holdPosition = mapToWindow(event.position);
+        m_holding = true;
+        m_hold.start();
+        if (onClicked)
             onClicked();
+    }
+
+    void pointerMove(const ui::PointerEvent &event) override
+    {
+        if (!m_holding)
+            return;
+        const ui::PointF position = mapToWindow(event.position);
+        if (std::abs(position.x - m_holdPosition.x) + std::abs(position.y - m_holdPosition.y) > 8) {
+            m_holding = false;
+            m_hold.stop();
+        }
+    }
+
+    void pointerRelease(const ui::PointerEvent &) override
+    {
+        m_holding = false;
+        m_hold.stop();
     }
 
     void layout() override
     {
         const double height = geometry().height;
         m_avatar->setGeometry({16, (height - 34) / 2, 34, 34});
+        m_avatarImage->setGeometry({16, (height - 34) / 2, 34, 34});
         const double textLeft = 60;
         const double width = std::max(0.0, geometry().width - textLeft - 12);
         m_time->setGeometry({geometry().width - 54, 12, 44, 16});
@@ -249,6 +310,10 @@ protected:
     }
 
 private:
+    ui::ImageView *m_avatarImage;
+    base::Timer m_hold{base::EventLoop::current()};
+    ui::PointF m_holdPosition;
+    bool m_holding = false;
     ui::Label *m_avatar;
     ui::Label *m_name;
     ui::Label *m_snippet;
@@ -319,7 +384,10 @@ public:
         m_body->setFontSize(theme.fontSize());
         m_body->setFontFamily(theme.fontFamily);
         m_body->setColor(message.outgoing ? ui::ColorId::HighlightedText : ui::ColorId::Text);
-        m_time->setText(timeOf(message.timestamp));
+        std::string time = timeOf(message.timestamp);
+        if (message.outgoing && !message.receipt.empty())
+            time += "  \u00b7 " + message.receipt;
+        m_time->setText(time);
         m_time->setFontSize(theme.smallFontSize());
         m_time->setFontFamily(theme.fontFamily);
         m_time->setColor(ui::ColorId::DisabledText);
@@ -823,7 +891,7 @@ class AccountsSheet : public ui::View
 public:
     AccountsSheet()
         : m_title(addChild<ui::Label>(tr("Services")))
-        , m_subtitle(addChild<ui::Label>(tr("Every conversation in one window.")))
+        , m_subtitle(addChild<ui::Label>(tr("Choose a service to see its conversations.")))
         , m_footer(addChild<ui::Label>(tr("More services are on the way.")))
     {
         m_title->setFontSize(ui::Theme::current().fontSize() + 5);
@@ -835,30 +903,45 @@ public:
         m_footer->setColor(ui::ColorId::DisabledText);
         m_footer->setFadesWhenDisabled(false);
 
-        const std::pair<const char *, const char *> services[] = {
-            {"Phone", "SMS & MMS"},
-            {"Signal", "Not added yet"},
-            {"Telegram", "Not added yet"},
-            {"iPhone", "BlueFerry, later"},
-            {"Google Messages", "RCS is closed to other apps"},
+        const struct ServiceRow
+        {
+            const char *name;
+            const char *detail;
+            const char *id;
+        } services[] = {
+            {"Phone", "SMS & MMS", "sms"},
+            {"Signal", "Not linked yet", "signal"},
+            {"All conversations", "Every service in one list", "all"},
+            {"Telegram", "Not added yet", ""},
+            {"iPhone", "BlueFerry, later", ""},
+            {"Google Messages", "RCS is closed to other apps", ""},
         };
-        for (const auto &[name, detail] : services) {
-            auto *title = addChild<ui::Label>(name);
+        for (const ServiceRow &service : services) {
+            auto *title = addChild<ui::Label>(service.name);
             title->setFontSize(ui::Theme::current().fontSize());
             title->setFadesWhenDisabled(false);
-            auto *sub = addChild<ui::Label>(detail);
+            title->setColor(service.id[0] ? ui::ColorId::Text : ui::ColorId::DisabledText);
+            auto *sub = addChild<ui::Label>(service.detail);
             sub->setFontSize(ui::Theme::current().smallFontSize());
             sub->setColor(ui::ColorId::DisabledText);
             sub->setFadesWhenDisabled(false);
-            m_rows.push_back({title, sub});
+            m_rows.push_back({title, sub, service.id});
         }
         setVisible(false);
     }
 
     bool acceptsPointer() const override { return true; }
     bool acceptsFocus() const override { return true; }
-    std::function<void()> onSignal;
+    std::function<void(const std::string &service)> onChoose;
     void open() { setVisible(true); setFocus(); requestPaint(); }
+
+    void setActiveService(const std::string &service)
+    {
+        if (m_activeService == service)
+            return;
+        m_activeService = service;
+        requestPaint();
+    }
 
     void setServiceState(size_t index, const std::string &detail)
     {
@@ -886,9 +969,9 @@ protected:
         m_subtitle->setGeometry({m_card.x + 26, m_card.y + 50, width - 52, 18});
         double y = m_card.y + 78;
         m_rowRects.clear();
-        for (const auto &[title, detail] : m_rows) {
-            title->setGeometry({m_card.x + 26, y + 8, width - 52, 20});
-            detail->setGeometry({m_card.x + 26, y + 28, width - 52, 18});
+        for (const Row &row : m_rows) {
+            row.title->setGeometry({m_card.x + 26, y + 8, width - 52, 20});
+            row.detail->setGeometry({m_card.x + 26, y + 28, width - 52, 18});
             m_rowRects.push_back({m_card.x, y, m_card.width, 58});
             y += 58;
         }
@@ -910,6 +993,12 @@ protected:
                                  theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.07)
                                                 : ui::Color::rgb(0x000000).withAlpha(0.06));
             }
+            if (!m_rows[i].id.empty() && m_rows[i].id == m_activeService) {
+                const double cx = m_card.x + m_card.width - 30;
+                const double cy = y + 29;
+                painter.drawLine({cx - 5, cy}, {cx - 1, cy + 4}, theme.highlight, 1.8);
+                painter.drawLine({cx - 1, cy + 4}, {cx + 6, cy - 5}, theme.highlight, 1.8);
+            }
             y += 58;
         }
     }
@@ -921,13 +1010,16 @@ protected:
             setVisible(false);
             return;
         }
-        // The Signal row links; the rows above and below are informational.
-        if (m_rowRects.size() > 1) {
-            const ui::RectF &row = m_rowRects[1];
-            if (event.position.y >= row.y && event.position.y <= row.y + row.height && onSignal) {
+        for (size_t i = 0; i < m_rowRects.size() && i < m_rows.size(); ++i) {
+            const ui::RectF &row = m_rowRects[i];
+            if (event.position.y < row.y || event.position.y > row.y + row.height)
+                continue;
+            if (!m_rows[i].id.empty() && onChoose) {
+                const std::string service = m_rows[i].id;
                 setVisible(false);
-                onSignal();
+                onChoose(service);
             }
+            return;
         }
     }
 
@@ -945,12 +1037,14 @@ private:
     {
         ui::Label *title;
         ui::Label *detail;
+        std::string id;
     };
     ui::Label *m_title;
     ui::Label *m_subtitle;
     ui::Label *m_footer;
     std::vector<Row> m_rows;
     std::vector<ui::RectF> m_rowRects;
+    std::string m_activeService;
     ui::RectF m_card;
 };
 
@@ -1028,7 +1122,9 @@ public:
         , m_qr(addChild<QrOverlay>())
     {
         m_services->onClicked = [this] { m_accounts->open(); };
-        m_accounts->onSignal = [this] { m_window.linkSignal(); };
+        m_accounts->onChoose = [this](const std::string &service) {
+            m_window.chooseService(service);
+        };
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
         setClipsChildren(true);
@@ -1045,8 +1141,12 @@ public:
             const int index = int(row);
             if (index >= int(m_window.m_threads.size()))
                 return;
-            sidebar->bind(m_window.m_threads[size_t(index)], index == m_window.m_current);
+            sidebar->bind(m_window.m_threads[size_t(index)], index == m_window.m_current,
+                          m_window.m_activeService == "all");
             sidebar->onClicked = [this, index] { m_window.selectThread(index); };
+            sidebar->onMenu = [this, index](ui::PointF position) {
+                m_window.showThreadMenu(index, position);
+            };
         };
 
         m_messages->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
@@ -1068,6 +1168,7 @@ public:
         m_composer->setTextMargins(12, 8);
         m_composer->setFontSize(ui::Theme::current().fontSize());
         m_composer->onAccepted = [this] { m_window.send(); };
+        m_composer->onTextChanged = [this] { m_window.noteTyping(); };
         m_send->onClicked = [this] { m_window.send(); };
 
         m_status->setFontSize(ui::Theme::current().smallFontSize());
@@ -1114,21 +1215,24 @@ public:
             ready = backend->ready();
             phone = ready ? backend->statusLine() : std::string("Not connected");
         }
+        const std::string &service = m_window.m_activeService;
         std::string name = "SMS";
-        std::string service = "sms";
-        if (m_window.m_current >= 0
-            && m_window.m_current < int(m_window.m_threads.size())) {
-            const Thread &thread = m_window.m_threads[size_t(m_window.m_current)];
-            service = thread.service;
-            if (!thread.serviceName.empty())
-                name = thread.serviceName;
-        }
+        if (service == "signal")
+            name = "Signal";
+        else if (service == "all")
+            name = tr("All");
         bool serviceReady = ready;
-        for (const auto &backend : m_window.m_backends) {
-            if (backend->account().id == service)
-                serviceReady = backend->ready();
+        if (service == "all") {
+            for (const auto &backend : m_window.m_backends)
+                serviceReady = serviceReady || backend->ready();
+        } else {
+            for (const auto &backend : m_window.m_backends) {
+                if (backend->account().id == service)
+                    serviceReady = backend->ready();
+            }
         }
         m_services->setService(name, serviceReady);
+        m_accounts->setActiveService(service);
         m_accounts->setPhoneState(phone);
         for (const auto &backend : m_window.m_backends) {
             if (backend->account().id != "signal")
@@ -1242,6 +1346,8 @@ private:
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
     : m_sync(loop)
+    , m_typingHide(loop)
+    , m_typingStop(loop)
     , m_demo(demo)
     , m_client(std::make_unique<MessagesClient>(loop))
 {
@@ -1257,6 +1363,8 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
         m_root->requestLayout();
         m_root->requestPaint();
     });
+
+    m_threadMenu = std::make_unique<ui::Menu>();
 
     m_root = new RootView(*this);
     setContentView(std::unique_ptr<ui::View>(m_root));
@@ -1290,6 +1398,11 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
                           {"6", "Perfect, see you both.", "2026-11-21T18:07:00", "", true, true}};
         group.snippet = group.messages.back().body;
         m_threads = {group, first, second};
+        for (Thread &thread : m_threads) {
+            thread.service = "sms";
+            thread.serviceName = "SMS";
+        }
+        m_allThreads = m_threads;
     } else {
         auto sms = std::make_unique<SmsBackend>(loop);
         std::string backendError;
@@ -1316,6 +1429,26 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
                 m_backends.push_back(std::move(signal));
             }
 
+            for (auto &backend : m_backends) {
+                m_backendSubscriptions.push_back(backend->typingChanged.connect(
+                        [this](const std::string &key, bool typing) { onTyping(key, typing); }));
+            }
+
+            m_typingStop.setSingleShot(true);
+            m_typingStop.setInterval(std::chrono::seconds(5));
+            m_typingStop.onTimeout = [this] {
+                m_lastTypingSent = 0;
+                if (m_current < 0 || m_current >= int(m_threads.size()))
+                    return;
+                Thread &thread = m_threads[size_t(m_current)];
+                if (Backend *backend = backendFor(thread.service))
+                    backend->sendTyping(thread, false);
+            };
+
+            m_typingHide.setSingleShot(true);
+            m_typingHide.setInterval(std::chrono::seconds(6));
+            m_typingHide.onTimeout = [this] { restoreSubtitle(); };
+
             m_notifier = std::make_unique<Notifier>(loop);
             m_notifierSubscription = m_notifier->activated.connect(
                     [this](const std::string &key) { openConversation(key); });
@@ -1329,6 +1462,7 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
             reloadFromPhone();
             updateStatus();
         } else {
+            m_activeService = "all";
             m_subscriptions.push_back(m_client->changed.connect([this] {
                 reloadThreads();
                 updateStatus();
@@ -1400,10 +1534,12 @@ void MessagesWindow::openImage(int64_t messageId, const std::string &path)
 
 void MessagesWindow::updateAttachment(int64_t messageId, std::string path)
 {
-    for (Thread &thread : m_threads) {
-        for (Message &message : thread.messages) {
-            if (message.id == messageId)
-                message.attachmentPath = path;
+    for (std::vector<Thread> *list : {&m_allThreads, &m_threads}) {
+        for (Thread &thread : *list) {
+            for (Message &message : thread.messages) {
+                if (message.id == messageId)
+                    message.attachmentPath = path;
+            }
         }
     }
     m_root->updateAttachment(messageId, path);
@@ -1411,11 +1547,18 @@ void MessagesWindow::updateAttachment(int64_t messageId, std::string path)
 
 void MessagesWindow::openConversation(const std::string &key)
 {
-    for (int index = 0; index < int(m_threads.size()); ++index) {
-        if (m_threads[size_t(index)].key != key)
+    for (const Thread &thread : m_allThreads) {
+        if (thread.key != key)
             continue;
-        selectThread(index);
-        m_root->sidebar()->scrollToRow(size_t(index));
+        if (m_activeService != "all" && thread.service != m_activeService)
+            m_activeService = thread.service;
+        showServiceThreads(key);
+        for (int index = 0; index < int(m_threads.size()); ++index) {
+            if (m_threads[size_t(index)].key != key)
+                continue;
+            m_root->sidebar()->scrollToRow(size_t(index));
+            break;
+        }
         show();
         return;
     }
@@ -1428,21 +1571,8 @@ void MessagesWindow::reloadThreads()
     const std::string selected = m_current >= 0 && m_current < int(m_threads.size())
             ? m_threads[size_t(m_current)].key
             : std::string();
-    m_threads = m_client->threads();
-    m_root->sidebar()->setRowCount(m_threads.size());
-    m_root->sidebar()->reload();
-    for (int index = 0; index < int(m_threads.size()); ++index) {
-        if (m_threads[size_t(index)].key == selected) {
-            selectThread(index);
-            return;
-        }
-    }
-    if (m_current >= int(m_threads.size()))
-        m_current = -1;
-    if (!m_threads.empty() && m_current < 0)
-        selectThread(0);
-    if (m_threads.empty())
-        m_root->setEmptyText(tr("No conversations yet. Messages you receive on the iPhone appear here."));
+    m_allThreads = m_client->threads();
+    showServiceThreads(selected);
 }
 
 void MessagesWindow::reloadFromPhone()
@@ -1482,7 +1612,18 @@ void MessagesWindow::reloadFromPhone()
         }
     }
 
-    m_threads = std::move(merged);
+    m_allThreads = std::move(merged);
+    showServiceThreads(selected);
+}
+
+void MessagesWindow::showServiceThreads(const std::string &selected)
+{
+    m_threads.clear();
+    for (const Thread &thread : m_allThreads) {
+        if (m_activeService == "all" || thread.service == m_activeService)
+            m_threads.push_back(thread);
+    }
+
     // reload() keeps rows whose index did not change; drop them so a moved
     // conversation rebinds.
     m_root->sidebar()->setRowCount(0);
@@ -1497,14 +1638,54 @@ void MessagesWindow::reloadFromPhone()
         selectThread(index);
         return;
     }
-    m_current = -1;
     if (!m_threads.empty()) {
         selectThread(0);
         return;
     }
-    m_root->setEmptyText(m_usePhone
-                                 ? tr("No messages yet.")
-                                 : tr("Your phone connects over Wi-Fi. Keep KDE Connect open on it."));
+    showServiceEmpty();
+}
+
+void MessagesWindow::showServiceEmpty()
+{
+    m_current = -1;
+    m_shownKey.clear();
+    m_shownCount = 0;
+    m_shownLast.clear();
+    m_root->title()->setText(std::string());
+    m_root->subtitle()->setText(std::string());
+    m_root->showMessages({}, false, false);
+    m_root->composer()->setText({});
+    m_root->composer()->setEnabled(false);
+    m_root->sendButton()->setEnabled(false);
+    m_root->composer()->setPlaceholder(tr("Message"));
+    if (m_activeService == "signal") {
+        Backend *backend = backendFor("signal");
+        m_root->setEmptyText(backend && backend->ready()
+                                     ? tr("No Signal conversations yet.")
+                                     : tr("Link Signal from Services to see its conversations."));
+    } else if (m_activeService == "all") {
+        m_root->setEmptyText(tr("No messages yet."));
+    } else {
+        m_root->setEmptyText(m_usePhone
+                                     ? tr("No messages yet.")
+                                     : tr("Your phone connects over Wi-Fi. Keep KDE Connect open on it."));
+    }
+    m_root->refreshServices();
+}
+
+void MessagesWindow::chooseService(const std::string &service)
+{
+    if (service == "signal") {
+        Backend *backend = backendFor("signal");
+        if (backend && !backend->ready()) {
+            linkSignal();
+            return;
+        }
+    }
+    if (service == m_activeService)
+        return;
+    m_activeService = service;
+    showServiceThreads(std::string());
 }
 
 Backend *MessagesWindow::backendFor(const std::string &service) const
@@ -1531,7 +1712,7 @@ void MessagesWindow::selectThread(int index)
         }
     }
     m_root->title()->setText(thread.name);
-    m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
+    restoreSubtitle();
     m_root->refreshServices();
     const std::string last = thread.messages.empty()
             ? std::string()
@@ -1557,6 +1738,113 @@ void MessagesWindow::selectThread(int index)
         m_client->markRead(thread);
 }
 
+void MessagesWindow::showThreadMenu(int index, ui::PointF position)
+{
+    if (index < 0 || index >= int(m_threads.size()))
+        return;
+    const Thread thread = m_threads[size_t(index)];
+    const std::string key = thread.key;
+    const bool unread = thread.unread > 0;
+    m_threadMenu->clear();
+    m_threadMenu->addItem(unread ? tr("Mark as Read") : tr("Mark as Unread"),
+                          [this, key, unread] { setThreadRead(key, !unread); });
+    m_threadMenu->addItem(tr("Mark All as Read"), [this] { markVisibleRead(); });
+    Backend *backend = backendFor(thread.service);
+    if (backend && backend->canDelete()) {
+        m_threadMenu->addSeparator();
+        m_threadMenu->addItem(tr("Delete Conversation"), [this, key] { deleteThread(key); });
+    }
+    m_threadMenu->popup(this, position);
+}
+
+void MessagesWindow::setThreadRead(const std::string &key, bool unread)
+{
+    for (Thread &thread : m_threads) {
+        if (thread.key != key)
+            continue;
+        thread.unread = unread ? 1 : 0;
+        if (Backend *backend = backendFor(thread.service)) {
+            backend->setUnread(thread, unread);
+            if (!unread)
+                backend->markRead(thread);
+        }
+        break;
+    }
+    reloadFromPhone();
+}
+
+void MessagesWindow::markVisibleRead()
+{
+    for (const Thread &thread : m_threads) {
+        Backend *backend = backendFor(thread.service);
+        if (!backend)
+            continue;
+        backend->setUnread(thread, false);
+        backend->markRead(thread);
+    }
+    reloadFromPhone();
+}
+
+void MessagesWindow::deleteThread(const std::string &key)
+{
+    for (const Thread &thread : m_allThreads) {
+        if (thread.key != key)
+            continue;
+        Backend *backend = backendFor(thread.service);
+        if (backend && backend->removeThread(thread))
+            showServiceThreads(std::string());
+        return;
+    }
+}
+
+void MessagesWindow::onTyping(const std::string &key, bool typing)
+{
+    if (m_current < 0 || m_current >= int(m_threads.size())
+        || m_threads[size_t(m_current)].key != key)
+        return;
+    if (!typing) {
+        restoreSubtitle();
+        return;
+    }
+    m_typingKey = key;
+    m_root->subtitle()->setText(tr("typing\u2026"));
+    m_typingHide.start();
+}
+
+void MessagesWindow::restoreSubtitle()
+{
+    m_typingHide.stop();
+    m_typingKey.clear();
+    if (m_current < 0 || m_current >= int(m_threads.size())) {
+        m_root->subtitle()->setText(std::string());
+        return;
+    }
+    const Thread &thread = m_threads[size_t(m_current)];
+    m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
+}
+
+void MessagesWindow::noteTyping()
+{
+    if (m_demo || !m_usePhone || m_current < 0 || m_current >= int(m_threads.size()))
+        return;
+    Thread &thread = m_threads[size_t(m_current)];
+    Backend *backend = backendFor(thread.service);
+    if (!backend)
+        return;
+    if (m_root->composer()->text().empty()) {
+        backend->sendTyping(thread, false);
+        m_typingStop.stop();
+        m_lastTypingSent = 0;
+        return;
+    }
+    const int64_t now = int64_t(std::time(nullptr));
+    if (now - m_lastTypingSent >= 3) {
+        backend->sendTyping(thread, true);
+        m_lastTypingSent = now;
+    }
+    m_typingStop.start();
+}
+
 void MessagesWindow::send()
 {
     if (m_current < 0 || m_current >= int(m_threads.size()))
@@ -1565,6 +1853,10 @@ void MessagesWindow::send()
     const std::string body = m_root->composer()->text();
     if (body.empty())
         return;
+    if (Backend *typingBackend = backendFor(thread.service))
+        typingBackend->sendTyping(thread, false);
+    m_typingStop.stop();
+    m_lastTypingSent = 0;
     if (m_demo) {
         thread.messages.push_back({"", body, "", "", true, true});
         thread.snippet = body;
