@@ -29,4 +29,6 @@ target_link_libraries(pair-probe PRIVATE Cutefish::ToolkitBase OpenSSL::SSL Open
 
 install(TARGETS cutefish-messages RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/cutefish-messages.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES data/icons/org.cutefish.Messages.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 cutefish_add_translations(cutefish-messages SOURCES src DESKTOP_FILES data/cutefish-messages.desktop)

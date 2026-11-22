@@ -45,6 +45,15 @@ private:
     void phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages);
     void phoneConversations(std::vector<phone::Conversation> conversations);
 
+    // The summaries arrive in a burst; one refresh follows it.
+    base::Timer m_refresh;
+    std::vector<phone::Conversation> m_pendingConversations;
+    // What the conversation pane is showing, so an unchanged thread is not
+    // rebuilt and scrolled again.
+    int64_t m_shownThread = 0;
+    size_t m_shownCount = 0;
+    std::string m_shownLast;
+
     std::unique_ptr<MessagesClient> m_client;
     std::unique_ptr<phone::PhoneLink> m_phone;
     bool m_usePhone = false;

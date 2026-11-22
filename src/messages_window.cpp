@@ -8,6 +8,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <ctime>
 
@@ -88,7 +91,21 @@ Message messageOf(const phone::SmsMessage &sms)
 {
     Message message;
     message.handle = sms.address;
-    message.body = sms.body.empty() ? tr("Attachment") : sms.body;
+    message.body = sms.body;
+    // The original when it has been fetched, unless it is something only the
+    // preview can show.
+    const bool playable = sms.fullPath.ends_with(".mp4") || sms.fullPath.ends_with(".mp3")
+            || sms.fullPath.ends_with(".bin");
+    if (!sms.fullPath.empty() && !playable) {
+        message.attachmentPath = sms.fullPath;
+    } else {
+        for (const phone::SmsAttachment &attachment : sms.attachments) {
+            if (!attachment.thumbnailPath.empty()) {
+                message.attachmentPath = attachment.thumbnailPath;
+                break;
+            }
+        }
+    }
     message.timestamp = timestampOf(sms.date);
     message.outgoing = sms.type == 2;
     message.read = sms.read;
@@ -202,10 +219,28 @@ class BubbleView : public ui::View
 {
 public:
     BubbleView()
-        : m_author(addChild<ui::Label>())
+        : m_image(addChild<ui::ImageView>())
+        , m_author(addChild<ui::Label>())
         , m_body(addChild<ui::Label>())
         , m_time(addChild<ui::Label>())
     {
+        m_image->setCornerRadius(12);
+        m_image->setFillMode(ui::ImageView::FillMode::PreserveAspectFit);
+        m_image->setVisible(false);
+        // The preview is decoded after the row is measured; once it knows its
+        // shape, the bubble takes it.
+        m_image->onStatusChanged = [this](ui::ImageView::Status status) {
+            if (status != ui::ImageView::Status::Ready)
+                return;
+            const ui::SizeF size = m_image->sizeHint();
+            if (size.width <= 0 || size.height <= 0)
+                return;
+            const double aspect = size.width / size.height;
+            if (std::abs(aspect - m_aspect) < 0.01)
+                return;
+            m_aspect = aspect;
+            requestLayout();
+        };
         m_author->setFadesWhenDisabled(false);
         m_body->setFadesWhenDisabled(false);
         m_body->setWrap(true);
@@ -217,6 +252,12 @@ public:
     {
         const ui::Theme &theme = ui::Theme::current();
         m_outgoing = message.outgoing;
+        m_hasImage = !message.attachmentPath.empty();
+        m_hasText = !message.body.empty();
+        m_image->setVisible(m_hasImage);
+        if (m_hasImage)
+            m_image->setSource(message.attachmentPath);
+        m_body->setVisible(m_hasText);
         m_showTime = showTime;
         m_time->setVisible(showTime);
         m_showAuthor = group && !message.outgoing && showAuthor && !message.sender.empty();
@@ -242,11 +283,24 @@ public:
     {
         const double maximum = std::min(rowWidth * 0.68, 460.0);
         // As wide as the text wants, up to the maximum, and never a sliver.
-        m_bubbleWidth = std::clamp(m_body->sizeHint().width + 32.0, 64.0, maximum);
+        const double wanted = m_hasText ? m_body->sizeHint().width + 32.0 : 0.0;
+        m_bubbleWidth = std::clamp(std::max(wanted, m_hasImage ? 220.0 : 0.0), 64.0, maximum);
         const double textWidth = std::max(40.0, m_bubbleWidth - 32);
-        m_bodyHeight = std::max(22.0, std::ceil(m_body->heightForWidth(textWidth)) + 2.0);
+        m_bodyHeight = m_hasText
+                ? std::max(22.0, std::ceil(m_body->heightForWidth(textWidth)) + 2.0)
+                : 0.0;
+        m_imageHeight = m_hasImage ? std::clamp((m_bubbleWidth - 20) / m_aspect, 90.0, 340.0)
+                                   : 0.0;
         m_authorHeight = m_showAuthor ? 17.0 : 0.0;
-        m_bubbleHeight = 10 + m_authorHeight + m_bodyHeight + 10;
+        double inner = 0;
+        if (m_hasImage)
+            inner += m_imageHeight;
+        if (m_hasText) {
+            if (inner > 0)
+                inner += 8;
+            inner += m_bodyHeight;
+        }
+        m_bubbleHeight = 10 + m_authorHeight + inner + 10;
         return m_bubbleHeight + (m_showTime ? 17.0 : 0.0);
     }
 
@@ -257,7 +311,15 @@ protected:
     {
         m_left = m_outgoing ? geometry().width - m_bubbleWidth - 18 : 18;
         m_author->setGeometry({m_left + 16, 10, m_bubbleWidth - 32, m_authorHeight});
-        m_body->setGeometry({m_left + 16, 10 + m_authorHeight, m_bubbleWidth - 32, m_bodyHeight});
+        double y = 10 + m_authorHeight;
+        if (m_hasImage) {
+            m_image->setGeometry({m_left + 10, y, m_bubbleWidth - 20, m_imageHeight});
+            y += m_imageHeight;
+            if (m_hasText)
+                y += 8;
+        }
+        if (m_hasText)
+            m_body->setGeometry({m_left + 16, y, m_bubbleWidth - 32, m_bodyHeight});
         m_time->setGeometry({m_left + 16, m_bubbleHeight + 3, m_bubbleWidth - 32,
                              m_showTime ? 13.0 : 0.0});
     }
@@ -273,9 +335,12 @@ protected:
     }
 
 private:
+    ui::ImageView *m_image;
     ui::Label *m_author;
     ui::Label *m_body;
     ui::Label *m_time;
+    bool m_hasImage = false;
+    bool m_hasText = true;
     bool m_outgoing = false;
     bool m_showAuthor = false;
     bool m_showTime = true;
@@ -283,6 +348,8 @@ private:
     double m_bubbleWidth = 0;
     double m_bubbleHeight = 0;
     double m_bodyHeight = 21;
+    double m_imageHeight = 0;
+    double m_aspect = 1.4;
     double m_authorHeight = 0;
 };
 
@@ -531,7 +598,8 @@ private:
 };
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
-    : m_demo(demo)
+    : m_refresh(loop)
+    , m_demo(demo)
     , m_client(std::make_unique<MessagesClient>(loop))
 {
     setTitle(tr("Messages"));
@@ -586,9 +654,15 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
             m_usePhone = true;
             m_phoneSubscriptions.push_back(
                     m_phone->stateChanged.connect([this] { updateStatus(); }));
+            m_refresh.setSingleShot(true);
+            m_refresh.setInterval(std::chrono::milliseconds(60));
+            m_refresh.onTimeout = [this] {
+                phoneConversations(std::move(m_pendingConversations));
+            };
             m_phoneSubscriptions.push_back(m_phone->conversationsReceived.connect(
                     [this](std::vector<phone::Conversation> list) {
-                        phoneConversations(std::move(list));
+                        m_pendingConversations = std::move(list);
+                        m_refresh.start();
                     }));
             m_phoneSubscriptions.push_back(m_phone->threadReceived.connect(
                     [this](int64_t thread, std::vector<phone::SmsMessage> messages) {
@@ -650,6 +724,11 @@ void MessagesWindow::reloadThreads()
 
 void MessagesWindow::reloadFromPhone()
 {
+    // Newest first, whatever order the summaries arrived in or were updated.
+    std::sort(m_conversations.begin(), m_conversations.end(),
+              [](const phone::Conversation &left, const phone::Conversation &right) {
+                  return left.date > right.date;
+              });
     const int64_t selected = m_current >= 0 && m_current < int(m_threads.size())
             ? m_threads[size_t(m_current)].threadId
             : 0;
@@ -715,7 +794,16 @@ void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessa
         thread.messages.clear();
         for (const phone::SmsMessage &sms : m_phoneThreads[threadId])
             thread.messages.push_back(messageOf(sms));
-        m_root->showMessages(thread.messages, thread.group);
+        const std::string last = thread.messages.empty()
+                ? std::string()
+                : thread.messages.back().timestamp + thread.messages.back().body;
+        if (m_shownThread != thread.threadId || m_shownCount != thread.messages.size()
+            || m_shownLast != last) {
+            m_shownThread = thread.threadId;
+            m_shownCount = thread.messages.size();
+            m_shownLast = last;
+            m_root->showMessages(thread.messages, thread.group);
+        }
         m_root->setEmptyText(thread.messages.empty() ? tr("Loading…") : std::string());
     }
 }
@@ -728,7 +816,16 @@ void MessagesWindow::selectThread(int index)
     Thread &thread = m_threads[size_t(index)];
     m_root->title()->setText(thread.name);
     m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
-    m_root->showMessages(thread.messages, thread.group);
+    const std::string last = thread.messages.empty()
+            ? std::string()
+            : thread.messages.back().timestamp + thread.messages.back().body;
+    if (m_shownThread != thread.threadId || m_shownCount != thread.messages.size()
+        || m_shownLast != last) {
+        m_shownThread = thread.threadId;
+        m_shownCount = thread.messages.size();
+        m_shownLast = last;
+        m_root->showMessages(thread.messages, thread.group);
+    }
     m_root->sidebar()->reload();
     m_root->setEmptyText(thread.messages.empty() ? tr("Loading…") : std::string());
     const bool canReply = m_demo || m_usePhone || (!thread.group && thread.replyReady);
@@ -779,8 +876,16 @@ void MessagesWindow::send()
         thread.messages.push_back(messageOf(sent));
         thread.snippet = body;
         thread.lastTimestamp = timestampOf(sent.date);
+        // The list follows the phone: this conversation is now the newest.
+        for (phone::Conversation &conversation : m_conversations) {
+            if (conversation.threadId == thread.threadId) {
+                conversation.date = sent.date;
+                conversation.snippet = body;
+                conversation.type = 2;
+            }
+        }
         m_root->composer()->setText({});
-        selectThread(m_current);
+        reloadFromPhone();
         return;
     }
     std::string error;

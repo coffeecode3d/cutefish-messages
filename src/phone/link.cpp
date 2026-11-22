@@ -14,11 +14,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <array>
 #include <cerrno>
 #include <chrono>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -77,6 +80,60 @@ std::string numberKey(const std::string &text)
     if (digits.size() > 10 && digits[0] == '1')
         digits.erase(0, 1);
     return digits;
+}
+
+std::string attachmentDirectory()
+{
+    std::string base;
+    if (const char *cache = std::getenv("XDG_CACHE_HOME"))
+        base = cache;
+    else if (const char *home = std::getenv("HOME"))
+        base = std::string(home) + "/.cache";
+    else
+        base = "/tmp";
+    base += "/cutefish/messages/attachments";
+    std::error_code error;
+    std::filesystem::create_directories(base, error);
+    return base;
+}
+
+std::string extensionFor(const std::string &mimeType)
+{
+    if (mimeType.find("jpeg") != std::string::npos || mimeType.find("jpg") != std::string::npos)
+        return ".jpg";
+    if (mimeType.find("png") != std::string::npos)
+        return ".png";
+    if (mimeType.find("webp") != std::string::npos)
+        return ".webp";
+    if (mimeType.find("gif") != std::string::npos)
+        return ".gif";
+    if (mimeType.find("mp4") != std::string::npos || mimeType.find("video") != std::string::npos)
+        return ".mp4";
+    if (mimeType.find("mpeg") != std::string::npos || mimeType.find("audio") != std::string::npos)
+        return ".mp3";
+    return ".bin";
+}
+
+// Base64, as the phone writes thumbnails: whitespace and all is skipped.
+std::string base64Decode(const std::string &text)
+{
+    static const std::string alphabet =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    int accumulator = 0;
+    int bits = 0;
+    for (const char c : text) {
+        const auto position = alphabet.find(c);
+        if (position == std::string::npos)
+            continue;
+        accumulator = (accumulator << 6) | int(position);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(char((accumulator >> bits) & 0xFF));
+        }
+    }
+    return out;
 }
 
 // vCards fold long lines with a leading space.
@@ -209,6 +266,7 @@ bool PhoneLink::start(std::string &error)
     base::json::Value::Array incoming;
     // Peers check these before sending, so every reply we want is listed.
     for (const char *capability : {"kdeconnect.battery", "kdeconnect.sms.messages",
+                                   "kdeconnect.sms.attachment_file",
                                    "kdeconnect.contacts.response_uids_timestamps",
                                    "kdeconnect.contacts.response_vcards", "kdeconnect.pair"})
         incoming.push_back(base::json::Value(capability));
@@ -263,6 +321,10 @@ void PhoneLink::acceptConnection()
         ::close(fd);
         return;
     }
+
+    char host[INET_ADDRSTRLEN] = {};
+    if (inet_ntop(AF_INET, &from.sin_addr, host, sizeof(host)))
+        m_peerAddress = host;
 
     std::string error;
     if (!handshake(fd, error)) {
@@ -565,6 +627,40 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
         contactsChanged();
         return;
     }
+    if (type == "kdeconnect.sms.attachment_file") {
+        const int port = int(packet["payloadTransferInfo"]["port"].toInt());
+        const int64_t size = packet["payloadSize"].toInt();
+        if (m_pendingAttachments.empty()) {
+            std::fprintf(stderr, "phone: attachment arrived unasked\n");
+            return;
+        }
+        // The filename usually names the part; otherwise the oldest ask wins.
+        size_t chosen = 0;
+        const std::string filename = body["filename"].toString();
+        if (!filename.empty()) {
+            for (size_t i = 0; i < m_pendingAttachments.size(); ++i) {
+                if (filename.find(m_pendingAttachments[i].identifier) != std::string::npos) {
+                    chosen = i;
+                    break;
+                }
+            }
+        }
+        const PendingAttachment pending = m_pendingAttachments[chosen];
+        m_pendingAttachments.erase(m_pendingAttachments.begin() + long(chosen));
+        if (!downloadPayload(port, size, pending.path))
+            return;
+        const auto found = m_threads.find(pending.threadId);
+        if (found == m_threads.end())
+            return;
+        for (SmsMessage &message : found->second) {
+            if (message.id == pending.messageId) {
+                message.fullPath = pending.path;
+                threadReceived(pending.threadId, found->second);
+                break;
+            }
+        }
+        return;
+    }
     if (type != "kdeconnect.sms.messages")
         return;
 
@@ -589,6 +685,33 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
         const base::json::Value &addresses = entry["addresses"];
         if (addresses.isArray() && addresses.size() > 0)
             message.address = addresses[size_t(0)]["address"].toString();
+        const base::json::Value &attachments = entry["attachments"];
+        if (attachments.isArray()) {
+            for (size_t a = 0; a < attachments.size(); ++a) {
+                SmsAttachment attachment;
+                attachment.partId = attachments[a]["part_id"].toInt();
+                attachment.identifier = attachments[a]["unique_identifier"].toString();
+                attachment.mimeType = attachments[a]["mime_type"].toString();
+                const std::string thumbnail =
+                        base64Decode(attachments[a]["encoded_thumbnail"].toString());
+                if (!thumbnail.empty()) {
+                    const std::string path = attachmentDirectory() + "/t_"
+                            + std::to_string(message.id) + "_"
+                            + std::to_string(attachment.partId) + extensionFor(attachment.mimeType);
+                    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+                    out.write(thumbnail.data(), std::streamsize(thumbnail.size()));
+                    attachment.thumbnailPath = path;
+                }
+                // The original may already be in the cache.
+                const std::string full = attachmentDirectory() + "/"
+                        + std::to_string(message.id) + "_"
+                        + std::to_string(attachment.partId) + extensionFor(attachment.mimeType);
+                if (std::filesystem::exists(full))
+                    message.fullPath = full;
+                if (!attachment.thumbnailPath.empty() || !attachment.identifier.empty())
+                    message.attachments.push_back(std::move(attachment));
+            }
+        }
         if (thread < 0)
             thread = message.threadId;
         else if (message.threadId != thread)
@@ -599,7 +722,23 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
     if (oneThread && thread >= 0 && thread == m_pendingThread) {
         m_pendingThread = 0;
         m_threads[thread] = messages;
+        const std::vector<SmsMessage> copy = messages;
         threadReceived(thread, std::move(messages));
+
+        // Fetch the originals of the newest few, so a bubble can upgrade from
+        // its preview without hammering the phone for an old thread.
+        int asked = 0;
+        for (size_t i = copy.size(); i > 0 && asked < 4; --i) {
+            const SmsMessage &message = copy[i - 1];
+            if (message.fullPath.empty()) {
+                for (size_t a = 0; a < message.attachments.size() && asked < 4; ++a) {
+                    if (message.attachments[a].identifier.empty())
+                        continue;
+                    requestAttachment(thread, message.id, a);
+                    ++asked;
+                }
+            }
+        }
         return;
     }
 
@@ -611,7 +750,9 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
             continue;
         conversation.threadId = message.threadId;
         conversation.address = message.address;
-        conversation.snippet = message.body;
+        conversation.snippet = !message.body.empty()
+                ? message.body
+                : (message.attachments.empty() ? std::string() : std::string("Photo"));
         conversation.date = message.date;
         conversation.type = message.type;
         conversation.read = message.read;
@@ -710,6 +851,125 @@ void PhoneLink::addContact(const std::string &vcard)
         if (!key.empty())
             m_contactNames[key] = name;
     }
+}
+
+void PhoneLink::requestAttachment(int64_t threadId, int64_t messageId, size_t index)
+{
+    const auto found = m_threads.find(threadId);
+    if (found == m_threads.end())
+        return;
+    for (const SmsMessage &message : found->second) {
+        if (message.id != messageId || index >= message.attachments.size())
+            continue;
+        const SmsAttachment &attachment = message.attachments[index];
+        if (attachment.identifier.empty())
+            return;
+        const std::string path = attachmentDirectory() + "/" + std::to_string(messageId) + "_"
+                + std::to_string(attachment.partId) + extensionFor(attachment.mimeType);
+        if (std::filesystem::exists(path))
+            return;
+        for (const PendingAttachment &pending : m_pendingAttachments) {
+            if (pending.path == path)
+                return;
+        }
+        m_pendingAttachments.push_back({threadId, messageId, attachment.identifier, path});
+        base::json::Value body = base::json::Value::object();
+        body.insert("part_id", attachment.partId);
+        body.insert("unique_identifier", attachment.identifier);
+        sendPacket("kdeconnect.sms.request_attachment", std::move(body));
+        std::fprintf(stderr, "phone: asked for part %lld of message %lld\n",
+                     static_cast<long long>(attachment.partId),
+                     static_cast<long long>(messageId));
+        return;
+    }
+}
+
+bool PhoneLink::downloadPayload(int port, int64_t size, const std::string &path)
+{
+    if (m_peerAddress.empty() || port <= 0 || size <= 0 || size > 64 * 1024 * 1024)
+        return false;
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx)
+        return false;
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, acceptAny);
+    BIO *certBio = BIO_new_mem_buf(m_certificate.certificate.data(), int(m_certificate.certificate.size()));
+    X509 *x509 = PEM_read_bio_X509(certBio, nullptr, nullptr, nullptr);
+    BIO *keyBio = BIO_new_mem_buf(m_certificate.key.data(), int(m_certificate.key.size()));
+    EVP_PKEY *key = PEM_read_bio_PrivateKey(keyBio, nullptr, nullptr, nullptr);
+    if (x509) {
+        SSL_CTX_use_certificate(ctx, x509);
+        X509_free(x509);
+    }
+    if (key) {
+        SSL_CTX_use_PrivateKey(ctx, key);
+        EVP_PKEY_free(key);
+    }
+    BIO_free(certBio);
+    BIO_free(keyBio);
+
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        SSL_CTX_free(ctx);
+        return false;
+    }
+    timeval timeout {};
+    timeout.tv_sec = 10;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    bool ok = inet_pton(AF_INET, m_peerAddress.c_str(), &address.sin_addr) == 1
+            && ::connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) == 0;
+    if (!ok) {
+        std::fprintf(stderr, "phone: cannot reach payload port %d\n", port);
+        ::close(fd);
+        SSL_CTX_free(ctx);
+        return false;
+    }
+
+    SSL *ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, fd);
+    SSL_set_connect_state(ssl);
+    ok = SSL_connect(ssl) > 0;
+    if (!ok) {
+        char text[256] = {};
+        ERR_error_string_n(ERR_get_error(), text, sizeof(text));
+        std::fprintf(stderr, "phone: payload TLS failed: %s\n", text);
+    }
+
+    const std::string temporary = path + ".part";
+    int64_t received = 0;
+    if (ok) {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        ok = out.good();
+        char buffer[16384];
+        while (ok && received < size) {
+            const int want = int(std::min<int64_t>(sizeof(buffer), size - received));
+            const int got = SSL_read(ssl, buffer, want);
+            if (got <= 0) {
+                ok = false;
+                break;
+            }
+            out.write(buffer, got);
+            received += got;
+        }
+    }
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+    ::close(fd);
+
+    if (ok && received == size && std::rename(temporary.c_str(), path.c_str()) == 0) {
+        std::fprintf(stderr, "phone: attachment %lld bytes saved\n",
+                     static_cast<long long>(received));
+        return true;
+    }
+    std::remove(temporary.c_str());
+    std::fprintf(stderr, "phone: attachment incomplete (%lld of %lld)\n",
+                 static_cast<long long>(received), static_cast<long long>(size));
+    return false;
 }
 
 void PhoneLink::requestThread(int64_t threadId)

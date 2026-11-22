@@ -20,6 +20,8 @@ struct Message
     std::string sender;
     bool outgoing = false;
     bool read = true;
+    // A decoded preview written under the cache, when the message has one.
+    std::string attachmentPath;
 };
 
 struct Thread

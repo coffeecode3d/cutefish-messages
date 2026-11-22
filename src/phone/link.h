@@ -21,6 +21,17 @@ typedef struct ssl_st SSL;
 
 namespace cutefish::phone {
 
+// A picture or sound that came with a message; the phone includes a small
+// base64 thumbnail for pictures, enough to show a preview.
+struct SmsAttachment
+{
+    int64_t partId = 0;
+    std::string identifier;
+    std::string mimeType;
+    // The small preview the phone sends inline, written under the cache.
+    std::string thumbnailPath;
+};
+
 // One SMS, as the phone reports it.
 struct SmsMessage
 {
@@ -33,6 +44,9 @@ struct SmsMessage
     // Android's column: 1 is received, 2 is sent.
     int type = 0;
     bool read = true;
+    std::vector<SmsAttachment> attachments;
+    // The original file, once its payload has been fetched.
+    std::string fullPath;
 };
 
 // The latest message in a thread, which is what the phone lists.
@@ -44,6 +58,9 @@ struct Conversation
     int64_t date = 0;
     int type = 0;
     bool read = true;
+    std::vector<SmsAttachment> attachments;
+    // The original file, once its payload has been fetched.
+    std::string fullPath;
 };
 
 // The phone's side of the KDE Connect protocol, written against the published
@@ -70,6 +87,8 @@ public:
 
     void requestConversations();
     void requestThread(int64_t threadId);
+    // Fetches the original of one attachment over the payload channel.
+    void requestAttachment(int64_t threadId, int64_t messageId, size_t index);
     // Asks the phone for its address book, so threads show names.
     void requestContacts();
     // The contact's name for a number, or empty when it is not in the book.
@@ -105,6 +124,8 @@ private:
     void handlePacket(const std::string &type, const base::json::Value &packet);
     void confirmPairing(int64_t stamp);
     void addContact(const std::string &vcard);
+    bool downloadPayload(int port, int64_t size, const std::string &path);
+    void writePreviews(int64_t threadId);
     void buildIdentity();
 
     base::EventLoop *m_loop;
@@ -128,6 +149,7 @@ private:
     std::string m_peerId;
     std::string m_peerName;
     std::string m_peerPem;
+    std::string m_peerAddress;
     std::string m_targetId;
     std::string m_identity;
     bool m_paired = false;
@@ -139,6 +161,15 @@ private:
     std::map<std::string, std::string> m_contactNames;
     // Threads already fetched, so a newly pushed message joins its thread.
     std::map<int64_t, std::vector<SmsMessage>> m_threads;
+    // One entry per attachment asked for, in the order asked.
+    struct PendingAttachment
+    {
+        int64_t threadId = 0;
+        int64_t messageId = 0;
+        std::string identifier;
+        std::string path;
+    };
+    std::vector<PendingAttachment> m_pendingAttachments;
 };
 
 } // namespace cutefish::phone

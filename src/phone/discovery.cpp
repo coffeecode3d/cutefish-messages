@@ -60,14 +60,20 @@ base::json::Value identityPacket(const std::string &id, const std::string &name)
     body.insert("deviceType", "desktop");
     body.insert("protocolVersion", 8);
     base::json::Value::Array incoming;
-    incoming.push_back(base::json::Value("kdeconnect.sms.request"));
-    incoming.push_back(base::json::Value("kdeconnect.sms.request_conversations"));
-    incoming.push_back(base::json::Value("kdeconnect.sms.request_conversation"));
-    incoming.push_back(base::json::Value("kdeconnect.pair"));
+    for (const char *capability : {"kdeconnect.battery", "kdeconnect.sms.messages",
+                                   "kdeconnect.sms.attachment_file",
+                                   "kdeconnect.contacts.response_uids_timestamps",
+                                   "kdeconnect.contacts.response_vcards", "kdeconnect.pair"})
+        incoming.push_back(base::json::Value(capability));
     body.insert("incomingCapabilities", base::json::Value(incoming));
     base::json::Value::Array outgoing;
-    outgoing.push_back(base::json::Value("kdeconnect.sms.messages"));
-    outgoing.push_back(base::json::Value("kdeconnect.pair"));
+    for (const char *capability : {"kdeconnect.battery.request", "kdeconnect.sms.request",
+                                   "kdeconnect.sms.request_conversations",
+                                   "kdeconnect.sms.request_conversation",
+                                   "kdeconnect.sms.request_attachment",
+                                   "kdeconnect.contacts.request_all_uids_timestamps",
+                                   "kdeconnect.contacts.request_vcards_by_uid", "kdeconnect.pair"})
+        outgoing.push_back(base::json::Value(capability));
     body.insert("outgoingCapabilities", base::json::Value(outgoing));
 
     base::json::Value packet = base::json::Value::object();
