@@ -26,6 +26,8 @@ phone is the normal KDE Connect app.
   conversation breaks.
 - Links in messages are underlined and open in the browser; pictures open at
   the window's size.
+- A desktop notification for a text that arrives while its conversation is not
+  on screen; clicking it opens that conversation.
 - Pairing from either side, with the code both screens show; the phone pins the
   app's certificate after that.
 
@@ -61,11 +63,15 @@ requires before it answers, and the mistakes worth not repeating.
 ## Known limits
 
 - Only SMS and MMS are visible. RCS chats live in the phone's own store and are
-  not part of the provider KDE Connect reads, so they never appear here.
+  not part of the provider KDE Connect reads, so they never appear here, even
+  when Google Messages is the phone's messaging app.
 - Unread dots are cleared locally when a conversation is opened; the protocol
   has no packet to mark a thread read on the phone.
 - Android only lets an app send MMS when it is the default SMS app. Group
-  replies work when KDE Connect has that role; otherwise the phone ignores them.
+  replies work when KDE Connect has that role; with Google Messages installed
+  as the default, plain SMS still sends but MMS may not.
+- Notifications come from the 20-second conversation poll, so a text can take
+  that long to be announced if the phone does not push it.
 - Pinned conversations are a phone-app notion and are not carried by the
   protocol.
 

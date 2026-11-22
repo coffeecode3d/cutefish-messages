@@ -889,6 +889,9 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
             m_usePhone = true;
             m_phoneSubscriptions.push_back(
                     m_phone->stateChanged.connect([this] { updateStatus(); }));
+            m_notifier = std::make_unique<Notifier>(loop);
+            m_notifierSubscription = m_notifier->activated.connect(
+                    [this](int64_t thread) { openConversation(thread); });
             m_refresh.setSingleShot(true);
             m_refresh.setInterval(std::chrono::milliseconds(60));
             m_refresh.onTimeout = [this] {
@@ -1091,6 +1094,36 @@ void MessagesWindow::phoneConversations(std::vector<phone::Conversation> convers
               [](const phone::Conversation &left, const phone::Conversation &right) {
                   return left.date > right.date;
               });
+
+    // Announce what is new and unread, but not the first list after launch,
+    // which is history rather than news.
+    const bool firstLoad = m_conversations.empty();
+    const int64_t open = m_current >= 0 && m_current < int(m_threads.size())
+            ? m_threads[size_t(m_current)].threadId
+            : 0;
+    const int64_t now = nowMilliseconds();
+    if (firstLoad) {
+        // Everything already here is history; remember it silently.
+        for (const phone::Conversation &conversation : conversations)
+            m_notified[conversation.threadId] = conversation.date;
+    } else if (m_notifier) {
+        for (const phone::Conversation &conversation : conversations) {
+            if (conversation.read || conversation.type != 1 || conversation.snippet.empty())
+                continue;
+            if (conversation.threadId == open || conversation.threadId == 0)
+                continue;
+            // Only news, not an old unread thread seen for the first time.
+            if (conversation.date + 15 * 60 * 1000 < now)
+                continue;
+            const auto announced = m_notified.find(conversation.threadId);
+            if (announced != m_notified.end() && announced->second >= conversation.date)
+                continue;
+            if (m_notifier->notify(nameOf(conversation.address), conversation.snippet,
+                                   conversation.threadId))
+                m_notified[conversation.threadId] = conversation.date;
+        }
+    }
+
     m_conversations = std::move(conversations);
     reloadFromPhone();
 }
@@ -1147,6 +1180,18 @@ void MessagesWindow::refreshOpenThread()
     if (summary > cached) {
         m_requestedThread = thread;
         m_phone->requestThread(thread);
+    }
+}
+
+void MessagesWindow::openConversation(int64_t threadId)
+{
+    for (int index = 0; index < int(m_threads.size()); ++index) {
+        if (m_threads[size_t(index)].threadId != threadId)
+            continue;
+        selectThread(index);
+        m_root->sidebar()->scrollToRow(size_t(index));
+        show();
+        return;
     }
 }
 

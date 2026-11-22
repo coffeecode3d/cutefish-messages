@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "messages_client.h"
+#include "notifier.h"
 #include "phone/link.h"
 #include "ui/window.h"
 
@@ -48,6 +49,7 @@ private:
     // Fetches the open thread again when a summary says it has news.
     void refreshOpenThread();
     void openImage(int64_t messageId, const std::string &path);
+    void openConversation(int64_t threadId);
     void applyTheme();
     std::string nameOf(const std::string &address) const;
     std::string groupName(const std::vector<std::string> &addresses) const;
@@ -72,6 +74,10 @@ private:
 
     std::unique_ptr<MessagesClient> m_client;
     std::unique_ptr<phone::PhoneLink> m_phone;
+    std::unique_ptr<Notifier> m_notifier;
+    base::Subscription m_notifierSubscription;
+    // The newest date already announced per thread, so a re-poll is quiet.
+    std::map<int64_t, int64_t> m_notified;
     bool m_usePhone = false;
     std::vector<phone::Conversation> m_conversations;
     std::map<int64_t, std::vector<phone::SmsMessage>> m_phoneThreads;
