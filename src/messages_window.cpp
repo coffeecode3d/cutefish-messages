@@ -1376,7 +1376,7 @@ void MessagesWindow::applyTheme()
 
 void MessagesWindow::linkSignal()
 {
-    if (!m_signal)
+    if (!m_signal || m_signal->ready())
         return;
     m_signal->link(
             [this](const std::string &uri) { m_root->showQr(uri); },
