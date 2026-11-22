@@ -838,23 +838,12 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
     // Tahoe's liquid glass: the compositor blurs what lies behind the window,
     // and the material tints, saturates and lights it. Everything the app
     // paints goes over that.
-    const ui::Theme &theme = ui::Theme::current();
-    ui::Color tint = theme.darkMode ? ui::Color::rgb(0x1C1C1E) : ui::Color::rgb(0xFFFFFF);
-    setBackgroundColor(ui::ColorRecipe(tint.withAlpha(0.0)));
-    setBackgroundBlur({0, 0, 920, 620}, 24);
-    ui::GlassMaterial material;
-    material.blurSigma = 8;
-    material.saturation = 1.35;
-    material.specularIntensity = 0.55;
-    material.shininess = 60;
-    material.sheen = 0.35;
-    material.tintRed = tint.r / 255.0;
-    material.tintGreen = tint.g / 255.0;
-    material.tintBlue = tint.b / 255.0;
-    material.tintAlpha = theme.darkMode ? 0.50 : 0.46;
-    material.bevel = 24;
-    material.rim = 0.35;
-    setBackgroundGlass(material);
+    applyTheme();
+    m_themeSubscription = ui::Theme::changed().connect([this] {
+        applyTheme();
+        m_root->requestLayout();
+        m_root->requestPaint();
+    });
 
     m_root = new RootView(*this);
     setContentView(std::unique_ptr<ui::View>(m_root));
@@ -931,7 +920,30 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
 
 MessagesWindow::~MessagesWindow()
 {
+    m_themeSubscription.reset();
     m_subscriptions.clear();
+}
+
+void MessagesWindow::applyTheme()
+{
+    const ui::Theme &theme = ui::Theme::current();
+    const ui::Color tint = theme.darkMode ? ui::Color::rgb(0x141416) : ui::Color::rgb(0xFFFFFF);
+    setBackgroundColor(ui::ColorRecipe(tint.withAlpha(0.0)));
+    setBackgroundBlur({0, 0, size().width, size().height}, 24);
+
+    ui::GlassMaterial material;
+    material.blurSigma = 8;
+    material.saturation = 1.35;
+    material.specularIntensity = 0.55;
+    material.shininess = 60;
+    material.sheen = 0.35;
+    material.tintRed = tint.r / 255.0;
+    material.tintGreen = tint.g / 255.0;
+    material.tintBlue = tint.b / 255.0;
+    material.tintAlpha = theme.darkMode ? 0.50 : 0.46;
+    material.bevel = 24;
+    material.rim = 0.35;
+    setBackgroundGlass(material);
 }
 
 void MessagesWindow::reloadThreads()

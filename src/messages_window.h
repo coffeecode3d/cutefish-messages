@@ -45,6 +45,7 @@ private:
     void phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages);
     void phoneAttachment(int64_t messageId, std::string path);
     void openImage(int64_t messageId, const std::string &path);
+    void applyTheme();
     void phoneConversations(std::vector<phone::Conversation> conversations);
 
     // The summaries arrive in a burst; one refresh follows it.
@@ -68,6 +69,7 @@ private:
     int m_current = -1;
     bool m_demo = false;
     std::vector<base::Subscription> m_subscriptions;
+    base::Subscription m_themeSubscription;
 
     RootView *m_root = nullptr;
 };
