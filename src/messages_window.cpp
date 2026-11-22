@@ -20,9 +20,11 @@
 #include "ui/image_view.h"
 #include "ui/label.h"
 #include "ui/list_view.h"
+#include "ui/keys.h"
 #include "ui/scroll_view.h"
 #include "ui/text_field.h"
 #include "ui/theme.h"
+#include "ui/window_header.h"
 
 using cutefish::i18n::tr;
 
@@ -304,9 +306,16 @@ public:
         return m_bubbleHeight + (m_showTime ? 17.0 : 0.0);
     }
 
-    bool acceptsPointer() const override { return false; }
+    bool acceptsPointer() const override { return m_hasImage; }
+    std::function<void(const std::string &)> onImage;
 
 protected:
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (m_hasImage && event.button == ui::MouseButton::Left && onImage)
+            onImage(m_image->source());
+    }
+
     void layout() override
     {
         m_left = m_outgoing ? geometry().width - m_bubbleWidth - 18 : 18;
@@ -358,12 +367,14 @@ private:
 class ConversationView : public ui::View
 {
 public:
-    ConversationView(std::vector<Message> messages, bool group)
+    ConversationView(std::vector<Message> messages, bool group,
+                     std::function<void(const std::string &)> openImage)
         : m_messages(std::move(messages))
         , m_group(group)
     {
         for (size_t i = 0; i < m_messages.size(); ++i) {
             auto *bubble = addChild<BubbleView>();
+            bubble->onImage = openImage;
             const bool sameSender = i > 0 && m_messages[i - 1].sender == m_messages[i].sender;
             const bool showTime = i == 0 || !sameSender || breaksGroup(i)
                     || secondsOf(m_messages[i].timestamp)
@@ -451,11 +462,68 @@ private:
     ui::Label *m_glyph;
 };
 
+// A picture at the window's size over a dimmed scrim; a click or Escape closes it.
+class ImageViewer : public ui::View
+{
+public:
+    ImageViewer()
+        : m_image(addChild<ui::ImageView>())
+    {
+        m_image->setFillMode(ui::ImageView::FillMode::PreserveAspectFit);
+        m_image->setCornerRadius(12);
+        setVisible(false);
+    }
+
+    void show(const std::string &path)
+    {
+        m_image->setSource(path);
+        setVisible(true);
+        setFocus();
+        requestLayout();
+        requestPaint();
+    }
+
+    bool acceptsPointer() const override { return true; }
+    bool acceptsFocus() const override { return true; }
+
+protected:
+    void layout() override
+    {
+        m_image->setGeometry({48, 40, std::max(0.0, geometry().width - 96),
+                              std::max(0.0, geometry().height - 80)});
+    }
+
+    void paint(ui::Painter &painter) override
+    {
+        painter.fillRect({0, 0, geometry().width, geometry().height},
+                         ui::Color::rgb(0x000000).withAlpha(0.72));
+    }
+
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (event.button == ui::MouseButton::Left)
+            setVisible(false);
+    }
+
+    bool keyPress(const ui::KeyEvent &event) override
+    {
+        if (event.key == ui::key::Escape) {
+            setVisible(false);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    ui::ImageView *m_image;
+};
+
 class MessagesWindow::RootView : public ui::View
 {
 public:
     explicit RootView(MessagesWindow &window)
         : m_window(window)
+        , m_header(addChild<ui::WindowHeader>(44))
         , m_sidebarTitle(addChild<ui::Label>(tr("Messages")))
         , m_sidebar(addChild<ui::ListView>())
         , m_title(addChild<ui::Label>())
@@ -465,7 +533,10 @@ public:
         , m_composer(addChild<ui::TextField>())
         , m_send(addChild<SendButton>())
         , m_status(addChild<ui::Label>())
+        , m_viewer(addChild<ImageViewer>())
     {
+        m_header->setContentUnderButtons(true);
+        m_header->setButtonMargin(14);
         m_sidebarTitle->setFontSize(ui::Theme::current().fontSize() + 3);
         m_sidebarTitle->setFadesWhenDisabled(false);
         m_sidebar->setRowHeight(56);
@@ -524,7 +595,8 @@ public:
     // the content's height to be known.
     void showMessages(const std::vector<Message> &messages, bool group)
     {
-        m_messages->setContentView(std::make_unique<ConversationView>(messages, group));
+        m_messages->setContentView(std::make_unique<ConversationView>(
+                messages, group, [this](const std::string &path) { m_viewer->show(path); }));
         m_scrollToEnd.start();
     }
     ui::TextField *composer() const { return m_composer; }
@@ -568,13 +640,15 @@ protected:
         constexpr double kStatus = 28;
         constexpr double kComposer = 56;
 
-        m_sidebarTitle->setGeometry({20, 12, kSidebar - 40, 26});
-        m_sidebar->setGeometry({0, 52, kSidebar, height - kStatus - 52});
+        m_header->setGeometry({0, 0, width, 44});
+        m_viewer->setGeometry({0, 0, width, height});
+        m_sidebarTitle->setGeometry({124, 11, kSidebar - 140, 22});
+        m_sidebar->setGeometry({0, 44, kSidebar, height - kStatus - 44});
         const double left = kSidebar;
         const double right = width - kSidebar;
-        m_title->setGeometry({left + 18, 12, right - 120, 26});
-        m_subtitle->setGeometry({left + 18, 38, right - 120, 16});
-        const double listTop = 60;
+        m_title->setGeometry({left + 18, 10, right - 140, 24});
+        m_subtitle->setGeometry({left + 18, 32, right - 140, 12});
+        const double listTop = 52;
         const double listBottom = height - kStatus - kComposer - 8;
         m_messages->setGeometry({left + 8, listTop, right - 16, std::max(0.0, listBottom - listTop)});
         m_empty->setGeometry({left + 24, listTop, right - 48, std::max(0.0, listBottom - listTop)});
@@ -585,6 +659,7 @@ protected:
 
 private:
     MessagesWindow &m_window;
+    ui::WindowHeader *m_header;
     ui::Label *m_sidebarTitle;
     ui::ListView *m_sidebar;
     ui::Label *m_title;
@@ -595,6 +670,7 @@ private:
     ui::TextField *m_composer;
     SendButton *m_send;
     ui::Label *m_status;
+    ImageViewer *m_viewer;
 };
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
