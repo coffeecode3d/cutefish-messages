@@ -38,6 +38,22 @@ phone is the normal KDE Connect app.
 - The compositor's glass for the window backdrop; without it the app still
   works over a plain background.
 
+## Install on CutefishOS
+
+This is an independent project, not part of the Cutefish organisation; the
+Cutefish maintainers declined to adopt it and suggested keeping it separate.
+
+Dependencies: `cutefish-toolkit`, OpenSSL, CMake and Ninja.
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build
+sudo cmake --install build
+```
+
+That installs the app, its desktop entry and icon. Pair the phone once, and
+the conversations appear.
+
 ## Build
 
 ```sh
