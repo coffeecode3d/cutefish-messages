@@ -46,6 +46,7 @@ private:
     void handleNotification(const base::json::Value &params);
     void handleEnvelope(const base::json::Value &envelope);
     Thread &threadFor(const std::string &key, const std::string &name, bool group);
+    bool hasMessage(const Thread &thread, int64_t id) const;
     void ensureThreadsSorted();
 
     base::EventLoop *m_loop;

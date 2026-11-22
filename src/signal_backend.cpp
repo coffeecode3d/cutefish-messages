@@ -158,10 +158,14 @@ void SignalBackend::beginReceive()
 
 void SignalBackend::refresh()
 {
+    if (!m_linked)
+        return;
     // The daemon streams receive notifications by default; asking for groups
     // names the ones that have no message yet.
-    m_rpc.call("listGroups", [this](bool ok, const base::json::Value &groups,
-                                    const std::string &) {
+    base::json::Value groupParams = base::json::Value::object();
+    groupParams.insert("account", m_account);
+    m_rpc.call("listGroups", std::move(groupParams),
+               [this](bool ok, const base::json::Value &groups, const std::string &) {
         if (!ok || !groups.isArray())
             return;
         for (size_t i = 0; i < groups.size(); ++i) {
@@ -211,6 +215,8 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
             title = name.empty() ? from : name;
         }
         Thread &thread = threadFor(key, title, group);
+        if (hasMessage(thread, when))
+            return;
         Message message;
         message.id = when;
         message.handle = from;
@@ -222,6 +228,23 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         thread.snippet = body;
         thread.lastTimestamp = timestampOf(when);
         thread.unread = 1;
+        threadsChanged();
+        return;
+    }
+
+    const base::json::Value &receipt = envelope["receiptMessage"];
+    if (receipt.isObject() && receipt["isRead"].toBool(false)) {
+        const base::json::Value &timestamps = receipt["timestamps"];
+        for (auto &[key, thread] : m_threads) {
+            for (Message &message : thread.messages) {
+                if (!message.outgoing)
+                    continue;
+                for (size_t i = 0; i < timestamps.size(); ++i) {
+                    if (timestamps[i].toInt() == message.id)
+                        message.read = true;
+                }
+            }
+        }
         threadsChanged();
         return;
     }
@@ -245,6 +268,8 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
             title = destination;
         }
         Thread &thread = threadFor(key, title, group);
+        if (hasMessage(thread, when))
+            return;
         Message message;
         message.id = when;
         message.handle = destination;
@@ -256,6 +281,15 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         thread.lastTimestamp = timestampOf(when);
         threadsChanged();
     }
+}
+
+bool SignalBackend::hasMessage(const Thread &thread, int64_t id) const
+{
+    for (const Message &message : thread.messages) {
+        if (message.id == id)
+            return true;
+    }
+    return false;
 }
 
 Thread &SignalBackend::threadFor(const std::string &key, const std::string &name, bool group)
@@ -302,12 +336,11 @@ void SignalBackend::markRead(const Thread &thread)
     if (newest == 0)
         return;
     base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
     base::json::Value::Array recipients;
     recipients.push_back(base::json::Value(thread.address));
     params.insert("recipient", base::json::Value(std::move(recipients)));
-    base::json::Value::Array timestamps;
-    timestamps.push_back(base::json::Value(newest));
-    params.insert("timestamps", base::json::Value(std::move(timestamps)));
+    params.insert("targetTimestamp", newest);
     params.insert("type", "read");
     m_rpc.call("sendReceipt", std::move(params), nullptr);
 }
@@ -319,6 +352,7 @@ bool SignalBackend::send(const Thread &thread, const std::string &body, std::str
         return false;
     }
     base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
     if (thread.group) {
         params.insert("groupId", thread.address);
     } else {

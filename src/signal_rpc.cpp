@@ -67,6 +67,16 @@ bool SignalRpc::start(const std::string &binary, const std::string &dataDir,
                       const std::string &socketPath, std::string &error)
 {
     stop();
+
+    // A helper left by an earlier run still serves this account. Take it
+    // rather than unlinking its socket out from under it.
+    if (connectSocket(socketPath, m_fd)) {
+        int flags = ::fcntl(m_fd, F_GETFL, 0);
+        if (flags >= 0)
+            ::fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+        m_watch = m_loop->watch(m_fd, POLLIN, [this](uint32_t) { onReadable(); });
+        return true;
+    }
     ::unlink(socketPath.c_str());
 
     const pid_t pid = ::fork();
@@ -78,7 +88,7 @@ bool SignalRpc::start(const std::string &binary, const std::string &dataDir,
         ::setsid();
         const std::string socket = "--socket=" + socketPath;
         ::execlp(binary.c_str(), binary.c_str(), "--data-dir", dataDir.c_str(), "daemon",
-                 socket.c_str(), static_cast<char *>(nullptr));
+                 "--receive-mode=on-start", socket.c_str(), static_cast<char *>(nullptr));
         ::_exit(127);
     }
     m_process = pid;
@@ -115,8 +125,21 @@ void SignalRpc::stop()
     }
     if (m_process > 0) {
         ::kill(pid_t(m_process), SIGTERM);
-        int status = 0;
-        ::waitpid(pid_t(m_process), &status, 0);
+        // The helper closes its accounts on SIGTERM, which takes a moment.
+        bool exited = false;
+        for (int i = 0; i < 30 && !exited; ++i) {
+            int status = 0;
+            const pid_t done = ::waitpid(pid_t(m_process), &status, WNOHANG);
+            if (done == pid_t(m_process) || done < 0)
+                exited = true;
+            else
+                ::usleep(100 * 1000);
+        }
+        if (!exited) {
+            ::kill(pid_t(m_process), SIGKILL);
+            int status = 0;
+            ::waitpid(pid_t(m_process), &status, 0);
+        }
         m_process = 0;
     }
     failAll("The Signal helper stopped.");
