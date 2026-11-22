@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Messages
+GenericName=Messages
+Comment=Text messages from your iPhone, over BlueFerry
+Exec=cutefish-messages %U
+Icon=org.cutefish.Messages
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+Keywords=iPhone;SMS;iMessage;BlueFerry;messages;chat;
+StartupNotify=true
