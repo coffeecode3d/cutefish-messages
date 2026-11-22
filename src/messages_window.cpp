@@ -163,6 +163,7 @@ int64_t secondsOf(const std::string &timestamp)
 Message messageOf(const phone::SmsMessage &sms)
 {
     Message message;
+    message.id = sms.id;
     message.handle = sms.address;
     message.body = sms.body;
     // The original when it has been fetched, unless it is something only the
@@ -324,6 +325,7 @@ public:
     void bind(const Message &message, bool group, bool showAuthor, bool showTime)
     {
         const ui::Theme &theme = ui::Theme::current();
+        m_messageId = message.id;
         m_outgoing = message.outgoing;
         m_hasImage = !message.attachmentPath.empty();
         m_hasText = !message.body.empty();
@@ -383,8 +385,17 @@ public:
         return m_bubbleHeight + (m_showTime ? 17.0 : 0.0);
     }
 
+    void setAttachment(const std::string &path)
+    {
+        m_hasImage = true;
+        m_image->setSource(path);
+        m_image->setVisible(true);
+        requestLayout();
+        requestPaint();
+    }
+
     bool acceptsPointer() const override { return m_hasImage || m_hasLink; }
-    std::function<void(const std::string &)> onImage;
+    std::function<void(int64_t, const std::string &)> onImage;
 
 protected:
     void pointerPress(const ui::PointerEvent &event) override
@@ -401,7 +412,7 @@ protected:
             }
         }
         if (m_hasImage && onImage)
-            onImage(m_image->source());
+            onImage(m_messageId, m_image->source());
     }
 
     void layout() override
@@ -439,6 +450,7 @@ private:
     bool m_hasImage = false;
     bool m_hasText = true;
     bool m_hasLink = false;
+    int64_t m_messageId = 0;
     bool m_outgoing = false;
     bool m_showAuthor = false;
     bool m_showTime = true;
@@ -457,7 +469,7 @@ class ConversationView : public ui::View
 {
 public:
     ConversationView(std::vector<Message> messages, bool group,
-                     std::function<void(const std::string &)> openImage)
+                     std::function<void(int64_t, const std::string &)> openImage)
         : m_messages(std::move(messages))
         , m_group(group)
     {
@@ -496,6 +508,20 @@ protected:
             const double height = m_bubbles[i]->measure(rowWidth);
             m_bubbles[i]->setGeometry({8, y, rowWidth, height});
             y += height + 4;
+        }
+    }
+
+private:
+public:
+    void updateAttachment(int64_t id, const std::string &path)
+    {
+        for (size_t i = 0; i < m_messages.size(); ++i) {
+            if (m_messages[i].id != id)
+                continue;
+            m_messages[i].attachmentPath = path;
+            m_bubbles[i]->setAttachment(path);
+            requestLayout();
+            return;
         }
     }
 
@@ -563,13 +589,23 @@ public:
         setVisible(false);
     }
 
-    void show(const std::string &path)
+    void show(int64_t messageId, const std::string &path)
     {
+        m_messageId = messageId;
         m_image->setSource(path);
         setVisible(true);
         setFocus();
         requestLayout();
         requestPaint();
+    }
+
+    // The original arrived for what is on screen: show it instead.
+    void updateIfShowing(int64_t messageId, const std::string &path)
+    {
+        if (isVisible() && messageId == m_messageId) {
+            m_image->setSource(path);
+            requestPaint();
+        }
     }
 
     bool acceptsPointer() const override { return true; }
@@ -605,6 +641,7 @@ protected:
 
 private:
     ui::ImageView *m_image;
+    int64_t m_messageId = 0;
 };
 
 class MessagesWindow::RootView : public ui::View
@@ -689,12 +726,26 @@ public:
     ui::ListView *sidebar() const { return m_sidebar; }
     ui::ScrollView *messages() const { return m_messages; }
 
+    void updateAttachment(int64_t id, const std::string &path)
+    {
+        if (auto *content = dynamic_cast<ConversationView *>(m_messages->contentView()))
+            content->updateAttachment(id, path);
+        m_viewer->updateIfShowing(id, path);
+    }
+
+    void showImage(int64_t id, const std::string &path)
+    {
+        m_viewer->show(id, path);
+    }
+
     // Rebuilds the conversation; the scroll to the newest message waits for
     // the content's height to be known.
     void showMessages(const std::vector<Message> &messages, bool group)
     {
         m_messages->setContentView(std::make_unique<ConversationView>(
-                messages, group, [this](const std::string &path) { m_viewer->show(path); }));
+                messages, group, [this](int64_t id, const std::string &path) {
+                    m_window.openImage(id, path);
+                }));
         m_scrollToEnd.start();
     }
     ui::TextField *composer() const { return m_composer; }
@@ -849,6 +900,10 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
                     [this](int64_t thread, std::vector<phone::SmsMessage> messages) {
                         phoneMessages(thread, std::move(messages));
                     }));
+            m_phoneSubscriptions.push_back(m_phone->attachmentReady.connect(
+                    [this](int64_t id, std::string path) {
+                        phoneAttachment(id, std::move(path));
+                    }));
             m_phoneSubscriptions.push_back(m_phone->notice.connect(
                     [this](std::string text) { m_root->status()->setText(text); }));
             m_phoneSubscriptions.push_back(
@@ -994,6 +1049,39 @@ void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessa
         }
         m_root->setEmptyText(thread.messages.empty() ? tr("Loading…") : std::string());
     }
+}
+
+void MessagesWindow::openImage(int64_t messageId, const std::string &path)
+{
+    bool full = false;
+    for (const auto &[threadId, list] : m_phoneThreads) {
+        for (const phone::SmsMessage &sms : list) {
+            if (sms.id == messageId)
+                full = !sms.fullPath.empty();
+        }
+    }
+    // An old preview: ask for the original, and the viewer sharpens when it
+    // lands rather than making the click wait.
+    if (!full && m_usePhone && m_phone)
+        m_phone->requestAttachmentNow(messageId);
+    m_root->showImage(messageId, path);
+}
+
+void MessagesWindow::phoneAttachment(int64_t messageId, std::string path)
+{
+    for (auto &[threadId, list] : m_phoneThreads) {
+        for (phone::SmsMessage &sms : list) {
+            if (sms.id == messageId)
+                sms.fullPath = path;
+        }
+    }
+    if (m_current >= 0 && m_current < int(m_threads.size())) {
+        for (Message &message : m_threads[size_t(m_current)].messages) {
+            if (message.id == messageId)
+                message.attachmentPath = path;
+        }
+    }
+    m_root->updateAttachment(messageId, path);
 }
 
 void MessagesWindow::selectThread(int index)

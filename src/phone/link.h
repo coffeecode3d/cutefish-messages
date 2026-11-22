@@ -88,7 +88,10 @@ public:
     void requestConversations();
     void requestThread(int64_t threadId);
     // Fetches the original of one attachment over the payload channel.
-    void requestAttachment(int64_t threadId, int64_t messageId, size_t index);
+    void requestAttachment(int64_t threadId, int64_t messageId, size_t index,
+                           bool priority = false);
+    // A picture the user clicked: fetch its original ahead of the queue.
+    void requestAttachmentNow(int64_t messageId);
     // Asks the phone for its address book, so threads show names.
     void requestContacts();
     // The contact's name for a number, or empty when it is not in the book.
@@ -100,6 +103,8 @@ public:
     base::Signal<> stateChanged;
     base::Signal<std::vector<Conversation>> conversationsReceived;
     base::Signal<int64_t, std::vector<SmsMessage>> threadReceived;
+    // One attachment's original arrived: its message id, and the file.
+    base::Signal<int64_t, std::string> attachmentReady;
     // The address book changed.
     base::Signal<> contactsChanged;
     // Something worth showing on the status line.
@@ -125,6 +130,7 @@ private:
     void confirmPairing(int64_t stamp);
     void addContact(const std::string &vcard);
     bool downloadPayload(int port, int64_t size, const std::string &path);
+    void pumpAttachments();
     void writePreviews(int64_t threadId);
     void buildIdentity();
 
@@ -169,7 +175,10 @@ private:
         std::string identifier;
         std::string path;
     };
-    std::vector<PendingAttachment> m_pendingAttachments;
+    std::vector<PendingAttachment> m_attachmentQueue;
+    // One request in flight, so the phone is never asked for a pile at once.
+    bool m_attachmentBusy = false;
+    base::Timer m_attachmentTimeout;
 };
 
 } // namespace cutefish::phone

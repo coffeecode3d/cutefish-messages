@@ -43,6 +43,8 @@ private:
     void updateStatus();
 
     void phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages);
+    void phoneAttachment(int64_t messageId, std::string path);
+    void openImage(int64_t messageId, const std::string &path);
     void phoneConversations(std::vector<phone::Conversation> conversations);
 
     // The summaries arrive in a burst; one refresh follows it.

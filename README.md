@@ -15,8 +15,9 @@ phone is the normal KDE Connect app.
 - Conversations and full message history from the phone, newest first.
 - Contact names from the phone's address book, with numbers formatted when
   there is no match.
-- MMS pictures, first as the preview the phone sends with the message and then
-  at full size, fetched over the protocol's payload channel and cached.
+- MMS pictures: the newest few in a conversation download their originals
+  automatically, one at a time; older ones stay as the phone's preview until
+  you click them, and the viewer sharpens in place when the original lands.
 - Sending through the phone's SIM, with the conversation moving to the top as
   it does on the phone.
 - Unread dots, wrapped bubbles that hug their text, and timestamps where a

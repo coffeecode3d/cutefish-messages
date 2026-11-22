@@ -204,6 +204,7 @@ bool readLine(int fd, std::string &line, int timeoutMs, std::string &rest)
 PhoneLink::PhoneLink(base::EventLoop *loop)
     : m_loop(loop)
     , m_discovery(loop)
+    , m_attachmentTimeout(loop)
 {
     m_certificate = loadOrCreatePhoneCertificate();
     m_discovery.setDeviceName(hostName());
@@ -630,7 +631,7 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
     if (type == "kdeconnect.sms.attachment_file") {
         const int port = int(packet["payloadTransferInfo"]["port"].toInt());
         const int64_t size = packet["payloadSize"].toInt();
-        if (m_pendingAttachments.empty()) {
+        if (m_attachmentQueue.empty()) {
             std::fprintf(stderr, "phone: attachment arrived unasked\n");
             return;
         }
@@ -638,27 +639,30 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
         size_t chosen = 0;
         const std::string filename = body["filename"].toString();
         if (!filename.empty()) {
-            for (size_t i = 0; i < m_pendingAttachments.size(); ++i) {
-                if (filename.find(m_pendingAttachments[i].identifier) != std::string::npos) {
+            for (size_t i = 0; i < m_attachmentQueue.size(); ++i) {
+                if (filename.find(m_attachmentQueue[i].identifier) != std::string::npos) {
                     chosen = i;
                     break;
                 }
             }
         }
-        const PendingAttachment pending = m_pendingAttachments[chosen];
-        m_pendingAttachments.erase(m_pendingAttachments.begin() + long(chosen));
-        if (!downloadPayload(port, size, pending.path))
-            return;
-        const auto found = m_threads.find(pending.threadId);
-        if (found == m_threads.end())
-            return;
-        for (SmsMessage &message : found->second) {
-            if (message.id == pending.messageId) {
-                message.fullPath = pending.path;
-                threadReceived(pending.threadId, found->second);
-                break;
+        const PendingAttachment pending = m_attachmentQueue[chosen];
+        m_attachmentQueue.erase(m_attachmentQueue.begin() + long(chosen));
+        m_attachmentBusy = false;
+        m_attachmentTimeout.stop();
+        if (downloadPayload(port, size, pending.path)) {
+            const auto found = m_threads.find(pending.threadId);
+            if (found != m_threads.end()) {
+                for (SmsMessage &message : found->second) {
+                    if (message.id == pending.messageId) {
+                        message.fullPath = pending.path;
+                        break;
+                    }
+                }
             }
+            attachmentReady(pending.messageId, pending.path);
         }
+        pumpAttachments();
         return;
     }
     if (type != "kdeconnect.sms.messages")
@@ -725,19 +729,17 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
         const std::vector<SmsMessage> copy = messages;
         threadReceived(thread, std::move(messages));
 
-        // Fetch the originals of the newest few, so a bubble can upgrade from
-        // its preview without hammering the phone for an old thread.
+        // The newest pictures upgrade on their own; older ones stay previews
+        // until someone asks to see them, so opening a long thread stays light.
         int asked = 0;
-        for (size_t i = copy.size(); i > 0 && asked < 4; --i) {
+        for (size_t i = copy.size(); i > 0 && asked < 6; --i) {
             const SmsMessage &message = copy[i - 1];
-            if (message.fullPath.empty()) {
-                for (size_t a = 0; a < message.attachments.size() && asked < 4; ++a) {
-                    if (message.attachments[a].identifier.empty())
-                        continue;
-                    requestAttachment(thread, message.id, a);
-                    ++asked;
-                }
-            }
+            if (!message.fullPath.empty() || message.attachments.empty())
+                continue;
+            if (message.attachments[0].identifier.empty())
+                continue;
+            requestAttachment(thread, message.id, 0);
+            ++asked;
         }
         return;
     }
@@ -853,7 +855,21 @@ void PhoneLink::addContact(const std::string &vcard)
     }
 }
 
-void PhoneLink::requestAttachment(int64_t threadId, int64_t messageId, size_t index)
+void PhoneLink::requestAttachmentNow(int64_t messageId)
+{
+    for (const auto &[threadId, list] : m_threads) {
+        for (const SmsMessage &message : list) {
+            if (message.id != messageId || !message.fullPath.empty())
+                continue;
+            if (!message.attachments.empty())
+                requestAttachment(threadId, messageId, 0, true);
+            return;
+        }
+    }
+}
+
+void PhoneLink::requestAttachment(int64_t threadId, int64_t messageId, size_t index,
+                                  bool priority)
 {
     const auto found = m_threads.find(threadId);
     if (found == m_threads.end())
@@ -868,20 +884,63 @@ void PhoneLink::requestAttachment(int64_t threadId, int64_t messageId, size_t in
                 + std::to_string(attachment.partId) + extensionFor(attachment.mimeType);
         if (std::filesystem::exists(path))
             return;
-        for (const PendingAttachment &pending : m_pendingAttachments) {
-            if (pending.path == path)
+        for (const PendingAttachment &queued : m_attachmentQueue) {
+            if (queued.path == path)
                 return;
         }
-        m_pendingAttachments.push_back({threadId, messageId, attachment.identifier, path});
-        base::json::Value body = base::json::Value::object();
-        body.insert("part_id", attachment.partId);
-        body.insert("unique_identifier", attachment.identifier);
-        sendPacket("kdeconnect.sms.request_attachment", std::move(body));
-        std::fprintf(stderr, "phone: asked for part %lld of message %lld\n",
-                     static_cast<long long>(attachment.partId),
-                     static_cast<long long>(messageId));
+        const PendingAttachment pending {threadId, messageId, attachment.identifier, path};
+        if (priority)
+            m_attachmentQueue.insert(m_attachmentQueue.begin(), pending);
+        else
+            m_attachmentQueue.push_back(pending);
+        pumpAttachments();
         return;
     }
+}
+
+void PhoneLink::pumpAttachments()
+{
+    if (m_attachmentBusy || m_attachmentQueue.empty() || !m_ssl)
+        return;
+    const PendingAttachment next = m_attachmentQueue.front();
+    int64_t partId = 0;
+    const auto found = m_threads.find(next.threadId);
+    if (found != m_threads.end()) {
+        for (const SmsMessage &message : found->second) {
+            if (message.id != next.messageId)
+                continue;
+            for (const SmsAttachment &attachment : message.attachments) {
+                if (attachment.identifier == next.identifier) {
+                    partId = attachment.partId;
+                    break;
+                }
+            }
+        }
+    }
+    if (partId == 0) {
+        m_attachmentQueue.erase(m_attachmentQueue.begin());
+        pumpAttachments();
+        return;
+    }
+    m_attachmentBusy = true;
+    base::json::Value body = base::json::Value::object();
+    body.insert("part_id", partId);
+    body.insert("unique_identifier", next.identifier);
+    sendPacket("kdeconnect.sms.request_attachment", std::move(body));
+    std::fprintf(stderr, "phone: asked for part %lld of message %lld\n",
+                 static_cast<long long>(partId), static_cast<long long>(next.messageId));
+    // If the phone never answers, move on rather than stalling the queue.
+    m_attachmentTimeout.setSingleShot(true);
+    m_attachmentTimeout.setInterval(std::chrono::seconds(20));
+    m_attachmentTimeout.onTimeout = [this] {
+        if (!m_attachmentBusy)
+            return;
+        m_attachmentBusy = false;
+        if (!m_attachmentQueue.empty())
+            m_attachmentQueue.erase(m_attachmentQueue.begin());
+        pumpAttachments();
+    };
+    m_attachmentTimeout.start();
 }
 
 bool PhoneLink::downloadPayload(int port, int64_t size, const std::string &path)

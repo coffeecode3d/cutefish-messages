@@ -22,6 +22,8 @@ struct Message
     bool read = true;
     // A decoded preview written under the cache, when the message has one.
     std::string attachmentPath;
+    // The phone's message id, to match an arriving attachment to its bubble.
+    int64_t id = 0;
 };
 
 struct Thread
