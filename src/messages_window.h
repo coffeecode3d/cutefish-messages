@@ -58,6 +58,7 @@ private:
     void ensureTelegram();
     void showTelegramAuth();
     void submitTelegramAuth(const std::string &value);
+    void saveTelegramCredentials(const std::string &id, const std::string &hash);
     void showThreadMenu(int index, ui::PointF position);
     void setThreadRead(const std::string &key, bool unread);
     void markVisibleRead();

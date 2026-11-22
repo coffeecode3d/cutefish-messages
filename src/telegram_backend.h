@@ -51,6 +51,10 @@ public:
     // Signing in is a few questions: phone number, code, then two-step
     // password if the account has one.
     bool configured() const { return !m_apiId.empty() && !m_apiHash.empty(); }
+    std::string qrLink() const { return m_qrLink; }
+    // Saves the pair in the user's config, readable only by them.
+    static bool saveCredentials(const std::string &id, const std::string &hash,
+                                std::string &error);
     bool authenticating() const { return m_authKind != AuthKind::None; }
     bool needsAuth() const
     {
@@ -102,6 +106,8 @@ private:
     AuthKind m_authKind = AuthKind::None;
     std::string m_authPrompt;
     std::string m_authDetail;
+    std::string m_qrLink;
+    bool m_qrRequested = false;
     std::string m_apiId;
     std::string m_apiHash;
     std::string m_dataDir;

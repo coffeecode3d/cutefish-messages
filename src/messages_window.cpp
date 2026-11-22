@@ -1001,7 +1001,10 @@ public:
         , m_prompt(addChild<ui::Label>())
         , m_detail(addChild<ui::Label>())
         , m_field(addChild<ui::TextField>())
+        , m_idField(addChild<ui::TextField>())
+        , m_hashField(addChild<ui::TextField>())
         , m_go(addChild<ui::Button>(tr("Continue")))
+        , m_save(addChild<ui::Button>(tr("Save")))
         , m_cancel(addChild<ui::Button>(tr("Cancel")))
         , m_open(addChild<ui::Button>(tr("Open my.telegram.org")))
     {
@@ -1012,23 +1015,38 @@ public:
         m_detail->setColor(ui::ColorId::DisabledText);
         m_detail->setFadesWhenDisabled(false);
         m_detail->setWrap(true);
+
+        m_idField->setPlaceholder(tr("API id"));
+        m_hashField->setPlaceholder(tr("API hash"));
+        m_idField->setTextMargins(10, 8);
+        m_hashField->setTextMargins(10, 8);
         m_field->onAccepted = [this] { submit(); };
+        m_idField->onAccepted = [this] { submitCredentials(); };
+        m_hashField->onAccepted = [this] { submitCredentials(); };
         m_go->onClicked = [this] { submit(); };
+        m_save->onClicked = [this] { submitCredentials(); };
         m_cancel->onClicked = [this] { setVisible(false); };
         m_open->onClicked = [] { openLink("https://my.telegram.org"); };
+        m_idField->setVisible(false);
+        m_hashField->setVisible(false);
+        m_save->setVisible(false);
         m_open->setVisible(false);
         setVisible(false);
     }
 
     std::function<void(const std::string &)> onSubmitted;
+    std::function<void(const std::string &id, const std::string &hash)> onCredentials;
     bool acceptsPointer() const override { return true; }
     bool acceptsFocus() const override { return true; }
 
     void show(const std::string &prompt, const std::string &detail, bool secret, bool waiting)
     {
-        m_help = false;
+        m_credentials = false;
         m_field->setVisible(true);
         m_go->setVisible(true);
+        m_idField->setVisible(false);
+        m_hashField->setVisible(false);
+        m_save->setVisible(false);
         m_open->setVisible(false);
         m_cancel->setText(tr("Cancel"));
         m_prompt->setText(prompt);
@@ -1047,18 +1065,23 @@ public:
         requestPaint();
     }
 
-    // When Telegram has no API credentials yet: what to do, in plain words.
-    void showHelp(const std::string &detail)
+    // The user pastes the API id and hash; the app writes them down itself.
+    void showCredentials()
     {
-        m_help = true;
+        m_credentials = true;
         m_prompt->setText(tr("Telegram needs your own API credentials"));
-        m_detail->setText(detail);
+        m_detail->setText(tr("Create a pair once at my.telegram.org (API development "
+                             "tools). They stay on this computer."));
         m_field->setVisible(false);
         m_go->setVisible(false);
+        m_idField->setVisible(true);
+        m_hashField->setVisible(true);
+        m_save->setVisible(true);
         m_open->setVisible(true);
-        m_cancel->setText(tr("Close"));
+        m_cancel->setText(tr("Cancel"));
         setVisible(true);
         setFocus();
+        m_idField->setFocus();
         requestLayout();
         requestPaint();
     }
@@ -1069,14 +1092,17 @@ protected:
     void layout() override
     {
         const double width = std::min(440.0, geometry().width - 80);
-        const double height = m_help ? 330 : 236;
+        const double height = m_credentials ? 360 : 236;
         m_card = {(geometry().width - width) / 2, (geometry().height - height) / 2, width, height};
         m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 28});
         m_prompt->setGeometry({m_card.x + 26, m_card.y + 56, width - 52, 22});
         m_detail->setGeometry({m_card.x + 26, m_card.y + 80, width - 52,
-                               m_help ? 170.0 : 34.0});
+                               m_credentials ? 44.0 : 34.0});
         m_field->setGeometry({m_card.x + 26, m_card.y + 124, width - 52, 36});
+        m_idField->setGeometry({m_card.x + 26, m_card.y + 132, width - 52, 36});
+        m_hashField->setGeometry({m_card.x + 26, m_card.y + 180, width - 52, 36});
         m_go->setGeometry({m_card.x + width - 134, m_card.y + height - 50, 100, 32});
+        m_save->setGeometry({m_card.x + width - 134, m_card.y + height - 50, 100, 32});
         m_cancel->setGeometry({m_card.x + width - 244, m_card.y + height - 50, 100, 32});
         m_open->setGeometry({m_card.x + 26, m_card.y + height - 50, 190, 32});
     }
@@ -1113,14 +1139,28 @@ private:
         onSubmitted(text);
     }
 
+    void submitCredentials()
+    {
+        if (!onCredentials)
+            return;
+        const std::string id = m_idField->text();
+        const std::string hash = m_hashField->text();
+        if (id.empty() || hash.empty())
+            return;
+        onCredentials(id, hash);
+    }
+
     ui::Label *m_title;
     ui::Label *m_prompt;
     ui::Label *m_detail;
     ui::TextField *m_field;
+    ui::TextField *m_idField;
+    ui::TextField *m_hashField;
     ui::Button *m_go;
+    ui::Button *m_save;
     ui::Button *m_cancel;
     ui::Button *m_open;
-    bool m_help = false;
+    bool m_credentials = false;
     ui::RectF m_card;
 };
 
@@ -1369,6 +1409,9 @@ public:
         m_auth->onSubmitted = [this](const std::string &value) {
             m_window.submitTelegramAuth(value);
         };
+        m_auth->onCredentials = [this](const std::string &id, const std::string &hash) {
+            m_window.saveTelegramCredentials(id, hash);
+        };
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
         setClipsChildren(true);
@@ -1453,14 +1496,7 @@ public:
         m_auth->show(prompt, detail, secret, waiting);
     }
     void hideAuth() { m_auth->hide(); }
-    void showTelegramHelp()
-    {
-        m_auth->showHelp(tr("Telegram asks every app for its own API id and hash.\n\n"
-                            "Create yours once at my.telegram.org (API development tools), then save them in\n"
-                            "~/.config/cutefish/messages/telegram.conf\n\n"
-                            "api_id=...\napi_hash=...\n\n"
-                            "Press Telegram again to sign in."));
-    }
+    void showTelegramSetup() { m_auth->showCredentials(); }
     void showQr(const std::string &title, const std::string &hint, const std::string &uri)
     {
         m_qr->show(title, hint, uri);
@@ -2038,7 +2074,7 @@ void MessagesWindow::ensureTelegram()
         return;
     auto telegram = std::make_unique<TelegramBackend>(base::EventLoop::current());
     if (!telegram->configured()) {
-        m_root->showTelegramHelp();
+        m_root->showTelegramSetup();
         return;
     }
     std::string error;
@@ -2080,10 +2116,28 @@ void MessagesWindow::showTelegramAuth()
 {
     if (!m_telegram)
         return;
+    if (!m_telegram->qrLink().empty()) {
+        m_root->hideAuth();
+        m_root->showQr(tr("Link Telegram"),
+                       tr("Telegram \u203a Settings \u203a Devices \u203a Link Desktop Device"),
+                       m_telegram->qrLink());
+        return;
+    }
     m_root->hideQr();
     const bool secret = m_telegram->authKind() == TelegramBackend::AuthKind::Password;
     m_root->showAuth(m_telegram->authPrompt(), m_telegram->authDetail(), secret,
                      !m_telegram->needsAuth());
+}
+
+void MessagesWindow::saveTelegramCredentials(const std::string &id, const std::string &hash)
+{
+    std::string error;
+    if (!TelegramBackend::saveCredentials(id, hash, error)) {
+        m_root->status()->setText(error);
+        return;
+    }
+    m_root->hideAuth();
+    ensureTelegram();
 }
 
 void MessagesWindow::submitTelegramAuth(const std::string &value)

@@ -40,7 +40,7 @@ runtime underneath.
 | --- | --- | --- |
 | Phone (SMS & MMS) | Ready | Our own KDE Connect protocol implementation |
 | Signal | Ready | Native `signal-cli` as a linked device |
-| Telegram | Ready to sign in | TDLib (`libtdjson`) with your own API id |
+| Telegram | Ready | TDLib (`libtdjson`) with your own API id, linked by QR |
 | iPhone (BlueFerry) | Later | — |
 | RCS (Google Messages) | Not available | RCS is closed to third-party clients |
 
@@ -77,9 +77,11 @@ That installs the app, its desktop entry and icon.
   <https://my.telegram.org> (API development tools), then put them in
   `~/.config/cutefish/messages/telegram.conf` as `api_id=...` and
   `api_hash=...` (or set `CUTEFISH_TELEGRAM_API_ID` and
-  `CUTEFISH_TELEGRAM_API_HASH`). Choose **Telegram** in the footer, enter
-  your phone number, the code Telegram sends, and your two-step password if
-  the account has one.
+  `CUTEFISH_TELEGRAM_API_HASH`). Choose **Telegram** in the footer; the first
+  time, paste the API id and hash into the app, which stores them only on this
+  computer. Then scan the code from *Telegram → Settings → Devices → Link
+  Desktop Device*; the app asks for your two-step password if the account has
+  one, and falls back to a phone number and code if the QR request fails.
 - Switch services from the footer at any time. **All conversations** mixes
   them, with each preview labelled by its service.
 - Attach a picture or file with the **+** beside the composer. Click a picture

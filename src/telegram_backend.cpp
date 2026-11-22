@@ -4,6 +4,7 @@
 #include "telegram_backend.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -172,6 +173,42 @@ TelegramBackend::~TelegramBackend()
 #endif
 }
 
+bool TelegramBackend::saveCredentials(const std::string &id, const std::string &hash,
+                                      std::string &error)
+{
+    const std::string apiId = trim(id);
+    const std::string apiHash = trim(hash);
+    if (apiId.empty() || apiHash.empty()
+        || !std::all_of(apiId.begin(), apiId.end(),
+                        [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        error = "Enter the numeric API id and the API hash.";
+        return false;
+    }
+    const std::string directory =
+            homePath("XDG_CONFIG_HOME", "/.config") + "/cutefish/messages";
+    std::error_code code;
+    std::filesystem::create_directories(directory, code);
+    const std::string path = directory + "/telegram.conf";
+    {
+        std::ofstream file(path, std::ios::trunc);
+        if (!file) {
+            error = "The credentials could not be saved.";
+            return false;
+        }
+        file << "api_id=" << apiId << "\napi_hash=" << apiHash << "\n";
+        if (!file) {
+            error = "The credentials could not be saved.";
+            return false;
+        }
+    }
+#ifdef __unix__
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read
+                                         | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace);
+#endif
+    return true;
+}
+
 ServiceAccount TelegramBackend::account() const
 {
     return {"telegram", "Telegram", m_authorized ? "Signed in" : "Not signed in", true};
@@ -277,16 +314,31 @@ void TelegramBackend::handleAuthState(const base::json::Value &state)
         request.insert("ignore_file_names", false);
         sendJson(request);
     } else if (type == "authorizationStateWaitPhoneNumber") {
-        setAuth(AuthKind::Phone, "Enter your phone number",
-                "Include the country code, for example +1 555 010 0000.");
+        // QR first: scanning skips the code, the same idea as Signal's link.
+        if (!m_qrRequested) {
+            m_qrRequested = true;
+            base::json::Value request = base::json::Value::object();
+            request.insert("@type", "requestQrCodeAuthentication");
+            request.insert("other_user_ids", base::json::Value::Array());
+            request.insert("@extra", "qr");
+            sendJson(request);
+            setAuth(AuthKind::Other, "Scan the code from Telegram", "");
+        } else {
+            setAuth(AuthKind::Phone, "Enter your phone number",
+                    "Include the country code, for example +1 555 010 0000.");
+        }
     } else if (type == "authorizationStateWaitOtherDeviceConfirmation") {
-        setAuth(AuthKind::Other, "Confirm this sign-in on another Telegram device", "");
+        m_qrLink = state["link"].toString();
+        setAuth(AuthKind::Other, "Scan the code from Telegram", "");
     } else if (type == "authorizationStateWaitCode") {
+        m_qrLink.clear();
         setAuth(AuthKind::Code, "Enter the code Telegram sent you", "Check Telegram or your SMS.");
     } else if (type == "authorizationStateWaitPassword") {
+        m_qrLink.clear();
         setAuth(AuthKind::Password, "Enter your two-step verification password", "");
     } else if (type == "authorizationStateReady") {
         m_authorized = true;
+        m_qrLink.clear();
         m_chatsRequested = false;
         setAuth(AuthKind::None, {}, {});
         statusChanged();
@@ -503,6 +555,11 @@ void TelegramBackend::handle(const base::json::Value &object)
     if (type == "error") {
         const std::string message = object["message"].toString();
         std::fprintf(stderr, "telegram: %s\n", message.c_str());
+        if (extra == "qr") {
+            m_qrRequested = false;
+            setAuth(AuthKind::Phone, "Enter your phone number",
+                    "Include the country code, for example +1 555 010 0000.");
+        }
         if (extra.starts_with("history:")) {
             const int64_t chatId = std::strtoll(extra.c_str() + 8, nullptr, 10);
             m_loadedChats.erase(chatId);
