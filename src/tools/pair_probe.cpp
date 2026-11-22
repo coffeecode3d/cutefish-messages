@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Reion Wong <reionwong@gmail.com>
+// SPDX-FileCopyrightText: 2026 coffeecode <212984587+coffeecode3d@users.noreply.github.com>
 // SPDX-License-Identifier: BSD-3-Clause
 
 // Listens as the desktop does, and pairs with the phone that connects to us:
