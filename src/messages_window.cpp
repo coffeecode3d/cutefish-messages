@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 
@@ -87,7 +88,7 @@ Message messageOf(const phone::SmsMessage &sms)
 {
     Message message;
     message.handle = sms.address;
-    message.body = sms.body;
+    message.body = sms.body.empty() ? tr("Attachment") : sms.body;
     message.timestamp = timestampOf(sms.date);
     message.outgoing = sms.type == 2;
     message.read = sms.read;
@@ -166,8 +167,8 @@ protected:
     void layout() override
     {
         const double height = geometry().height;
-        m_avatar->setGeometry({10, (height - 34) / 2, 34, 34});
-        const double textLeft = 54;
+        m_avatar->setGeometry({16, (height - 34) / 2, 34, 34});
+        const double textLeft = 60;
         const double width = std::max(0.0, geometry().width - textLeft - 12);
         m_time->setGeometry({geometry().width - 54, 12, 44, 16});
         m_name->setGeometry({textLeft, 10, width - 46, 20});
@@ -177,12 +178,12 @@ protected:
     void paint(ui::Painter &painter) override
     {
         const ui::Theme &theme = ui::Theme::current();
-        painter.fillEllipse({10, (geometry().height - 34) / 2, 34, 34},
+        painter.fillEllipse({16, (geometry().height - 34) / 2, 34, 34},
                             m_selected ? theme.highlight.withAlpha(0.22)
                                        : (theme.darkMode ? theme.secondBackground
                                                          : ui::Color::rgb(0xE4E4E8)));
         if (m_unread && !m_selected)
-            painter.fillEllipse({3, (geometry().height - 7) / 2, 7, 7}, theme.highlight);
+            painter.fillEllipse({4, (geometry().height - 8) / 2, 8, 8}, theme.highlight);
         if (m_selected)
             painter.drawRoundedRect({6, 3, geometry().width - 12, geometry().height - 6}, {8, 0, ui::themeCorners()},
                                     ui::Theme::current().highlight.withAlpha(0.14));
@@ -208,7 +209,7 @@ public:
         m_author->setFadesWhenDisabled(false);
         m_body->setFadesWhenDisabled(false);
         m_body->setWrap(true);
-        m_body->setVerticallyCentered(false);
+        m_body->setVerticallyCentered(true);
         m_time->setFadesWhenDisabled(false);
     }
 
@@ -229,7 +230,7 @@ public:
         m_body->setFontFamily(theme.fontFamily);
         m_body->setColor(message.outgoing ? ui::ColorId::HighlightedText : ui::ColorId::Text);
         m_time->setText(timeOf(message.timestamp));
-        m_time->setFontSize(theme.smallFontSize() - 1);
+        m_time->setFontSize(theme.smallFontSize());
         m_time->setFontFamily(theme.fontFamily);
         m_time->setColor(ui::ColorId::DisabledText);
         m_time->setTextAlignment(message.outgoing ? ui::Label::TextAlignment::Right
@@ -241,12 +242,12 @@ public:
     {
         const double maximum = std::min(rowWidth * 0.68, 460.0);
         // As wide as the text wants, up to the maximum, and never a sliver.
-        m_bubbleWidth = std::clamp(m_body->sizeHint().width + 28.0, 62.0, maximum);
-        const double textWidth = std::max(40.0, m_bubbleWidth - 28);
-        m_bodyHeight = std::max(21.0, m_body->heightForWidth(textWidth));
-        m_authorHeight = m_showAuthor ? 16.0 : 0.0;
-        m_bubbleHeight = 7 + m_authorHeight + m_bodyHeight + 7;
-        return m_bubbleHeight + (m_showTime ? 15.0 : 0.0);
+        m_bubbleWidth = std::clamp(m_body->sizeHint().width + 32.0, 64.0, maximum);
+        const double textWidth = std::max(40.0, m_bubbleWidth - 32);
+        m_bodyHeight = std::max(22.0, std::ceil(m_body->heightForWidth(textWidth)) + 2.0);
+        m_authorHeight = m_showAuthor ? 17.0 : 0.0;
+        m_bubbleHeight = 10 + m_authorHeight + m_bodyHeight + 10;
+        return m_bubbleHeight + (m_showTime ? 17.0 : 0.0);
     }
 
     bool acceptsPointer() const override { return false; }
@@ -255,9 +256,9 @@ protected:
     void layout() override
     {
         m_left = m_outgoing ? geometry().width - m_bubbleWidth - 18 : 18;
-        m_author->setGeometry({m_left + 14, 7, m_bubbleWidth - 28, m_authorHeight});
-        m_body->setGeometry({m_left + 14, 7 + m_authorHeight, m_bubbleWidth - 28, m_bodyHeight});
-        m_time->setGeometry({m_left + 14, m_bubbleHeight + 1, m_bubbleWidth - 28,
+        m_author->setGeometry({m_left + 16, 10, m_bubbleWidth - 32, m_authorHeight});
+        m_body->setGeometry({m_left + 16, 10 + m_authorHeight, m_bubbleWidth - 32, m_bodyHeight});
+        m_time->setGeometry({m_left + 16, m_bubbleHeight + 3, m_bubbleWidth - 32,
                              m_showTime ? 13.0 : 0.0});
     }
 
@@ -471,17 +472,25 @@ protected:
     {
         const ui::Theme &theme = ui::Theme::current();
         constexpr double kSidebar = 280;
+        // The window body is rounded by the compositor; clip what we paint to
+        // the same shape so no fill shows past it at the corners.
+        painter.clipRoundedRect({-1, -1, geometry().width + 2, geometry().height + 2}, 25);
         // The conversation is the window's paper; the list sits on a quieter
         // second surface, as iMessage's sidebar does.
-        painter.fillRect({0, 0, kSidebar, geometry().height}, theme.secondBackground);
-        painter.fillRect({kSidebar, 0, 1, geometry().height},
+        painter.fillRect({kSidebar, 0, geometry().width - kSidebar, geometry().height},
+                         theme.darkMode ? ui::Color::rgb(0x1C1C1E).withAlpha(0.88)
+                                        : ui::Color::rgb(0xFFFFFF).withAlpha(0.90));
+        painter.fillRect({0, 0, kSidebar, geometry().height},
                          theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.06)
-                                        : ui::Color::rgb(0x000000).withAlpha(0.08));
+                                        : ui::Color::rgb(0xFFFFFF).withAlpha(0.30));
+        painter.fillRoundedRect({kSidebar - 0.5, 12, 1, geometry().height - 24}, 0.5,
+                                theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.10)
+                                               : ui::Color::rgb(0x000000).withAlpha(0.09));
         // The composer's pill, as iMessage's field floats in one.
         const double composerTop = geometry().height - 28 - 56;
         painter.fillRoundedRect({kSidebar + 14, composerTop, geometry().width - kSidebar - 28, 46}, 23,
-                                theme.darkMode ? theme.secondBackground
-                                               : ui::Color::rgb(0xF1F1F3));
+                                theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.07)
+                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.55));
     }
 
     void layout() override
@@ -527,6 +536,27 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
 {
     setTitle(tr("Messages"));
     resize({920, 620});
+
+    // Tahoe's liquid glass: the compositor blurs what lies behind the window,
+    // and the material tints, saturates and lights it. Everything the app
+    // paints goes over that.
+    const ui::Theme &theme = ui::Theme::current();
+    ui::Color tint = theme.darkMode ? ui::Color::rgb(0x1C1C1E) : ui::Color::rgb(0xFFFFFF);
+    setBackgroundColor(ui::ColorRecipe(tint.withAlpha(0.0)));
+    setBackgroundBlur({0, 0, 920, 620}, 24);
+    ui::GlassMaterial material;
+    material.blurSigma = 8;
+    material.saturation = 1.35;
+    material.specularIntensity = 0.55;
+    material.shininess = 60;
+    material.sheen = 0.35;
+    material.tintRed = tint.r / 255.0;
+    material.tintGreen = tint.g / 255.0;
+    material.tintBlue = tint.b / 255.0;
+    material.tintAlpha = theme.darkMode ? 0.50 : 0.46;
+    material.bevel = 24;
+    material.rim = 0.35;
+    setBackgroundGlass(material);
 
     m_root = new RootView(*this);
     setContentView(std::unique_ptr<ui::View>(m_root));
@@ -722,6 +752,7 @@ void MessagesWindow::send()
         return;
     Thread &thread = m_threads[size_t(m_current)];
     const std::string body = m_root->composer()->text();
+    std::fprintf(stderr, "send: thread %d, %zu character(s)\n", m_current, body.size());
     if (body.empty())
         return;
     if (m_demo) {

@@ -499,6 +499,8 @@ void PhoneLink::consumeLines()
         const std::string type = (*packet)["type"].toString();
         if (type.empty())
             continue;
+        if (type.rfind("kdeconnect.sms", 0) == 0)
+            std::fprintf(stderr, "phone: <- %s\n", type.c_str());
         handlePacket(type, *packet);
     }
 }
@@ -731,14 +733,17 @@ bool PhoneLink::sendSms(const std::string &address, const std::string &body, std
     base::json::Value::Array addresses;
     addresses.push_back(std::move(entry));
 
+    std::fprintf(stderr, "phone: sending to %s: \"%s\"\n", address.c_str(), body.c_str());
     base::json::Value packetBody = base::json::Value::object();
     packetBody.insert("addresses", base::json::Value(std::move(addresses)));
     packetBody.insert("messageBody", body);
     packetBody.insert("version", 2);
     if (!sendPacket("kdeconnect.sms.request", std::move(packetBody))) {
         error = "The message could not be sent.";
+        std::fprintf(stderr, "phone: send failed\n");
         return false;
     }
+    std::fprintf(stderr, "phone: send packet written\n");
     return true;
 }
 
