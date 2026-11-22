@@ -637,12 +637,13 @@ protected:
     {
         if (!m_code)
             return;
-        const double side = std::min(geometry().width, geometry().height);
+        painter.fillRoundedRect({0, 0, geometry().width, geometry().height}, 10,
+                                ui::Color::rgb(0xFFFFFF));
+        const double side = std::min(geometry().width, geometry().height) - 24;
         const double cell = std::floor(side / m_code->width);
         const double used = cell * m_code->width;
         const double ox = (geometry().width - used) / 2;
         const double oy = (geometry().height - used) / 2;
-        painter.fillRect({ox, oy, used, used}, ui::Color::rgb(0xFFFFFF));
         const ui::Color ink = ui::Color::rgb(0x000000);
         for (int y = 0; y < m_code->width; ++y) {
             for (int x = 0; x < m_code->width; ++x) {
@@ -690,11 +691,14 @@ public:
 protected:
     void layout() override
     {
-        const double width = std::min(420.0, geometry().width - 80);
-        m_card = {(geometry().width - width) / 2, 70, width, width - 110};
-        m_title->setGeometry({m_card.x + 20, m_card.y + 18, width - 40, 28});
-        m_hint->setGeometry({m_card.x + 40, m_card.y + 48, width - 80, 36});
-        m_code->setGeometry({m_card.x + 30, m_card.y + 90, width - 60, width - 170});
+        const double width = std::min(430.0, geometry().width - 60);
+        const double code = std::min(width - 80, 300.0);
+        const double height = 128 + code + 28;
+        m_card = {(geometry().width - width) / 2,
+                  std::max(24.0, (geometry().height - height) / 2), width, height};
+        m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 26});
+        m_hint->setGeometry({m_card.x + 32, m_card.y + 50, width - 64, 40});
+        m_code->setGeometry({m_card.x + (width - code) / 2, m_card.y + 102, code, code});
     }
 
     void paint(ui::Painter &painter) override
