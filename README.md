@@ -40,7 +40,7 @@ runtime underneath.
 | --- | --- | --- |
 | Phone (SMS & MMS) | Ready | Our own KDE Connect protocol implementation |
 | Signal | Ready | Native `signal-cli` as a linked device |
-| Telegram | In progress | — |
+| Telegram | Ready to sign in | TDLib (`libtdjson`) with your own API id |
 | iPhone (BlueFerry) | Later | — |
 | RCS (Google Messages) | Not available | RCS is closed to third-party clients |
 
@@ -50,6 +50,8 @@ runtime underneath.
 - For SMS: an Android phone on the same network with KDE Connect installed.
 - For Signal: the native `signal-cli` binary, pointed at with
   `CUTEFISH_SIGNAL_CLI` when it is not on `PATH`.
+- For Telegram: TDLib (`libtdjson`, optional at build time) and your own
+  Telegram API id and hash.
 - Build tools: CMake and Ninja. `libqrencode` and `sqlite3` are used for the
   Signal linking code and store.
 
@@ -71,6 +73,13 @@ That installs the app, its desktop entry and icon.
   and scan the linking code from *Signal → Settings → Linked devices → Link
   new device*. Once linked, Signal joins the service list with history and
   media.
+- **Telegram:** create a pair of API credentials at
+  <https://my.telegram.org> (API development tools), then put them in
+  `~/.config/cutefish/messages/telegram.conf` as `api_id=...` and
+  `api_hash=...` (or set `CUTEFISH_TELEGRAM_API_ID` and
+  `CUTEFISH_TELEGRAM_API_HASH`). Choose **Telegram** in the footer and sign in
+  with your phone number, the code Telegram sends, and your two-step password
+  if you have one.
 - Switch services from the footer at any time. **All conversations** mixes
   them, with each preview labelled by its service.
 - Attach a picture or file with the **+** beside the composer. Click a picture
@@ -100,6 +109,8 @@ store and its limits.
 - Signal is reached through the community `signal-cli`; Signal does not promise
   that unofficial clients keep working.
 - iPhone support is waiting on BlueFerry and hardware to test it against.
+- Telegram requires your own API id and hash, because Telegram does not issue
+  one to third-party clients automatically.
 - Unread dots on the phone side are kept locally; the KDE Connect protocol has
   no packet to mark a thread read on the phone.
 

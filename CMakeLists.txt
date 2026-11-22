@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CutefishToolkit REQUIRED)
+find_package(Td QUIET)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(QRENCODE REQUIRED libqrencode)
@@ -18,6 +19,7 @@ add_executable(cutefish-messages
     src/signal_rpc.cpp
     src/signal_backend.cpp
     src/signal_store.cpp
+    src/telegram_backend.cpp
     src/avatar_cache.cpp
     src/messages_window.cpp
     src/phone/discovery.cpp
@@ -26,6 +28,15 @@ add_executable(cutefish-messages
 )
 target_include_directories(cutefish-messages PRIVATE src ${QRENCODE_INCLUDE_DIRS} ${SQLITE_INCLUDE_DIRS})
 target_link_libraries(cutefish-messages PRIVATE Cutefish::Toolkit OpenSSL::SSL OpenSSL::Crypto ${QRENCODE_LIBRARIES} ${SQLITE_LIBRARIES})
+if (Td_FOUND)
+    get_target_property(TD_INCLUDE Td::tdjson INTERFACE_INCLUDE_DIRECTORIES)
+    get_target_property(TD_LIBRARY Td::tdjson IMPORTED_LOCATION_NONE)
+    target_include_directories(cutefish-messages PRIVATE ${TD_INCLUDE})
+    target_compile_definitions(cutefish-messages PRIVATE
+        CUTEFISH_HAVE_TDLIB
+        CUTEFISH_TDLIB_PATH="${TD_LIBRARY}")
+    target_link_libraries(cutefish-messages PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 add_executable(discovery-probe src/tools/discovery_probe.cpp src/phone/discovery.cpp)
 target_include_directories(discovery-probe PRIVATE src)

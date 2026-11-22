@@ -29,6 +29,7 @@ namespace cutefish::messages {
 
 class SidebarRow;
 class SignalBackend;
+class TelegramBackend;
 class MessageRow;
 
 // Messages: conversations on the left, the chosen one and its composer on the
@@ -54,6 +55,9 @@ private:
     void noteTyping();
     void chooseAttachment();
     void sendAttachment(const std::string &path);
+    void ensureTelegram();
+    void showTelegramAuth();
+    void submitTelegramAuth(const std::string &value);
     void showThreadMenu(int index, ui::PointF position);
     void setThreadRead(const std::string &key, bool unread);
     void markVisibleRead();
@@ -83,6 +87,7 @@ private:
     std::unique_ptr<MessagesClient> m_client;
     std::vector<std::unique_ptr<Backend>> m_backends;
     SignalBackend *m_signal = nullptr;
+    TelegramBackend *m_telegram = nullptr;
     std::vector<base::Subscription> m_backendSubscriptions;
     std::unique_ptr<Notifier> m_notifier;
     std::unique_ptr<ui::Menu> m_threadMenu;

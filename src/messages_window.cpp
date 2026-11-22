@@ -5,6 +5,7 @@
 
 #include <qrencode.h>
 #include "signal_backend.h"
+#include "telegram_backend.h"
 #include "sms_backend.h"
 
 #include <sys/wait.h>
@@ -988,6 +989,111 @@ private:
     bool m_ready = false;
 };
 
+// Telegram's sign-in: a phone number, the code Telegram sends, then a
+// two-step password if the account has one.
+class AuthSheet : public ui::View
+{
+public:
+    AuthSheet()
+        : m_title(addChild<ui::Label>(tr("Telegram")))
+        , m_prompt(addChild<ui::Label>())
+        , m_detail(addChild<ui::Label>())
+        , m_field(addChild<ui::TextField>())
+        , m_go(addChild<ui::Button>(tr("Continue")))
+        , m_cancel(addChild<ui::Button>(tr("Cancel")))
+    {
+        m_title->setFontSize(ui::Theme::current().fontSize() + 4);
+        m_title->setFadesWhenDisabled(false);
+        m_prompt->setFadesWhenDisabled(false);
+        m_detail->setFontSize(ui::Theme::current().smallFontSize());
+        m_detail->setColor(ui::ColorId::DisabledText);
+        m_detail->setFadesWhenDisabled(false);
+        m_detail->setWrap(true);
+        m_field->onAccepted = [this] { submit(); };
+        m_go->onClicked = [this] { submit(); };
+        m_cancel->onClicked = [this] { setVisible(false); };
+        setVisible(false);
+    }
+
+    std::function<void(const std::string &)> onSubmitted;
+    bool acceptsPointer() const override { return true; }
+    bool acceptsFocus() const override { return true; }
+
+    void show(const std::string &prompt, const std::string &detail, bool secret, bool waiting)
+    {
+        m_prompt->setText(prompt);
+        m_detail->setText(detail);
+        m_field->setEchoMode(secret ? ui::TextField::EchoMode::Password
+                                    : ui::TextField::EchoMode::Normal);
+        m_field->setEnabled(!waiting);
+        m_go->setEnabled(!waiting);
+        if (!waiting)
+            m_field->setText({});
+        setVisible(true);
+        setFocus();
+        if (!waiting)
+            m_field->setFocus();
+        requestLayout();
+        requestPaint();
+    }
+
+    void hide() { setVisible(false); }
+
+protected:
+    void layout() override
+    {
+        const double width = std::min(440.0, geometry().width - 80);
+        const double height = 236;
+        m_card = {(geometry().width - width) / 2, (geometry().height - height) / 2, width, height};
+        m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 28});
+        m_prompt->setGeometry({m_card.x + 26, m_card.y + 56, width - 52, 22});
+        m_detail->setGeometry({m_card.x + 26, m_card.y + 80, width - 52, 34});
+        m_field->setGeometry({m_card.x + 26, m_card.y + 124, width - 52, 36});
+        m_go->setGeometry({m_card.x + width - 134, m_card.y + height - 50, 100, 32});
+        m_cancel->setGeometry({m_card.x + width - 244, m_card.y + height - 50, 100, 32});
+    }
+
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        painter.fillRect({0, 0, geometry().width, geometry().height},
+                         ui::Color::rgb(0x000000).withAlpha(0.38));
+        painter.fillRoundedRect(m_card, 20,
+                                theme.darkMode ? ui::Color::rgb(0x1E1E20).withAlpha(0.98)
+                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.98));
+    }
+
+    bool keyPress(const ui::KeyEvent &event) override
+    {
+        if (event.key == ui::key::Escape) {
+            setVisible(false);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    void submit()
+    {
+        const std::string text = m_field->text();
+        if (text.empty() || !onSubmitted)
+            return;
+        m_field->setText({});
+        m_field->setEnabled(false);
+        m_go->setEnabled(false);
+        m_prompt->setText(tr("Signing in\u2026"));
+        onSubmitted(text);
+    }
+
+    ui::Label *m_title;
+    ui::Label *m_prompt;
+    ui::Label *m_detail;
+    ui::TextField *m_field;
+    ui::Button *m_go;
+    ui::Button *m_cancel;
+    ui::RectF m_card;
+};
+
 // Which services feed the window: SMS now, the others named honestly.
 class AccountsSheet : public ui::View
 {
@@ -1015,7 +1121,7 @@ public:
             {"Phone", "SMS & MMS", "sms"},
             {"Signal", "Not linked yet", "signal"},
             {"All conversations", "Every service in one list", "all"},
-            {"Telegram", "Not added yet", ""},
+            {"Telegram", "Not signed in", "telegram"},
             {"iPhone", "BlueFerry, later", ""},
             {"Google Messages", "RCS is closed to other apps", ""},
         };
@@ -1223,11 +1329,15 @@ public:
         , m_viewer(addChild<ImageViewer>())
         , m_services(addChild<ServicesPill>())
         , m_accounts(addChild<AccountsSheet>())
+        , m_auth(addChild<AuthSheet>())
         , m_qr(addChild<QrOverlay>())
     {
         m_services->onClicked = [this] { m_accounts->open(); };
         m_accounts->onChoose = [this](const std::string &service) {
             m_window.chooseService(service);
+        };
+        m_auth->onSubmitted = [this](const std::string &value) {
+            m_window.submitTelegramAuth(value);
         };
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
@@ -1307,6 +1417,12 @@ public:
         m_viewer->show(id, path);
     }
 
+    void showAuth(const std::string &prompt, const std::string &detail, bool secret,
+                  bool waiting)
+    {
+        m_auth->show(prompt, detail, secret, waiting);
+    }
+    void hideAuth() { m_auth->hide(); }
     void showQr(const std::string &uri) { m_qr->show(uri); }
     void hideQr() { m_qr->setVisible(false); }
 
@@ -1344,11 +1460,14 @@ public:
         m_accounts->setActiveService(service);
         m_accounts->setPhoneState(phone);
         for (const auto &backend : m_window.m_backends) {
-            if (backend->account().id != "signal")
-                continue;
-            m_accounts->setServiceState(1, backend->ready()
-                                               ? std::string("Linked")
-                                               : std::string("Not linked yet"));
+            if (backend->account().id == "signal")
+                m_accounts->setServiceState(1, backend->ready()
+                                                   ? std::string("Linked")
+                                                   : std::string("Not linked yet"));
+            else if (backend->account().id == "telegram")
+                m_accounts->setServiceState(3, backend->ready()
+                                                   ? std::string("Signed in")
+                                                   : backend->account().detail);
         }
     }
 
@@ -1415,6 +1534,7 @@ protected:
         m_header->setGeometry({0, 0, width, 44});
         m_viewer->setGeometry({0, 0, width, height});
         m_accounts->setGeometry({0, 0, width, height});
+        m_auth->setGeometry({0, 0, width, height});
         m_qr->setGeometry({0, 0, width, height});
         m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
         m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - 44 - 40)});
@@ -1452,6 +1572,7 @@ private:
     ImageViewer *m_viewer;
     ServicesPill *m_services;
     AccountsSheet *m_accounts;
+    AuthSheet *m_auth;
     QrOverlay *m_qr;
 };
 
@@ -1790,6 +1911,19 @@ void MessagesWindow::showServiceEmpty()
 
 void MessagesWindow::chooseService(const std::string &service)
 {
+    if (service == "telegram") {
+        ensureTelegram();
+        if (!m_telegram)
+            return;
+        if (m_telegram->authenticating()) {
+            showTelegramAuth();
+            return;
+        }
+        if (!m_telegram->ready()) {
+            m_root->status()->setText(tr("Telegram is not signed in."));
+            return;
+        }
+    }
     if (service == "signal") {
         Backend *backend = backendFor("signal");
         if (backend && !backend->ready()) {
@@ -1851,6 +1985,62 @@ void MessagesWindow::selectThread(int index)
         m_root->composer()->setPlaceholder(tr("Group replies are not in this version yet"));
     if (!m_usePhone && !m_demo)
         m_client->markRead(thread);
+}
+
+void MessagesWindow::ensureTelegram()
+{
+    if (m_telegram)
+        return;
+    auto telegram = std::make_unique<TelegramBackend>(base::EventLoop::current());
+    std::string error;
+    if (!telegram->start(error)) {
+        m_root->status()->setText(error);
+        return;
+    }
+    m_telegram = telegram.get();
+    m_backendSubscriptions.push_back(
+            telegram->threadsChanged.connect([this] { reloadFromPhone(); }));
+    m_backendSubscriptions.push_back(
+            telegram->statusChanged.connect([this] { updateStatus(); }));
+    m_backendSubscriptions.push_back(telegram->typingChanged.connect(
+            [this](const std::string &key, bool typing) { onTyping(key, typing); }));
+    m_backendSubscriptions.push_back(telegram->attachmentReady.connect(
+            [this](int64_t id, std::string path) { updateAttachment(id, std::move(path)); }));
+    m_backendSubscriptions.push_back(telegram->authChanged.connect([this] {
+        if (m_telegram && m_telegram->ready()) {
+            m_root->hideAuth();
+            m_activeService = "telegram";
+            showServiceThreads(std::string());
+            updateStatus();
+            return;
+        }
+        if (m_telegram && m_telegram->needsAuth()) {
+            showTelegramAuth();
+            return;
+        }
+        if (!m_telegram || !m_telegram->authenticating())
+            m_root->hideAuth();
+    }));
+    m_backends.push_back(std::move(telegram));
+    if (m_telegram->authenticating())
+        showTelegramAuth();
+}
+
+void MessagesWindow::showTelegramAuth()
+{
+    if (!m_telegram)
+        return;
+    const bool secret = m_telegram->authKind() == TelegramBackend::AuthKind::Password;
+    m_root->showAuth(m_telegram->authPrompt(), m_telegram->authDetail(), secret,
+                     !m_telegram->needsAuth());
+}
+
+void MessagesWindow::submitTelegramAuth(const std::string &value)
+{
+    if (!m_telegram)
+        return;
+    m_telegram->submitAuth(value);
+    showTelegramAuth();
 }
 
 void MessagesWindow::chooseAttachment()
