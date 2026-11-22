@@ -847,8 +847,8 @@ class QrOverlay : public ui::View
 {
 public:
     QrOverlay()
-        : m_title(addChild<ui::Label>(tr("Link Signal")))
-        , m_hint(addChild<ui::Label>(tr("Signal \u203a Settings \u203a Linked devices \u203a Link new device")))
+        : m_title(addChild<ui::Label>())
+        , m_hint(addChild<ui::Label>())
         , m_code(addChild<QrView>())
     {
         m_title->setFontSize(ui::Theme::current().fontSize() + 4);
@@ -861,8 +861,10 @@ public:
         setVisible(false);
     }
 
-    void show(const std::string &uri)
+    void show(const std::string &title, const std::string &hint, const std::string &uri)
     {
+        m_title->setText(title);
+        m_hint->setText(hint);
         m_code->setText(uri);
         setVisible(true);
         setFocus();
@@ -1423,7 +1425,10 @@ public:
         m_auth->show(prompt, detail, secret, waiting);
     }
     void hideAuth() { m_auth->hide(); }
-    void showQr(const std::string &uri) { m_qr->show(uri); }
+    void showQr(const std::string &title, const std::string &hint, const std::string &uri)
+    {
+        m_qr->show(title, hint, uri);
+    }
     void hideQr() { m_qr->setVisible(false); }
 
     void refreshServices()
@@ -1749,7 +1754,11 @@ void MessagesWindow::linkSignal()
     if (!m_signal || m_signal->ready())
         return;
     m_signal->link(
-            [this](const std::string &uri) { m_root->showQr(uri); },
+            [this](const std::string &uri) {
+                m_root->showQr(tr("Link Signal"),
+                               tr("Signal \u203a Settings \u203a Linked devices \u203a Link new device"),
+                               uri);
+            },
             [this](bool ok, const std::string &error) {
                 m_root->hideQr();
                 if (!ok)
@@ -2009,17 +2018,18 @@ void MessagesWindow::ensureTelegram()
     m_backendSubscriptions.push_back(telegram->authChanged.connect([this] {
         if (m_telegram && m_telegram->ready()) {
             m_root->hideAuth();
+            m_root->hideQr();
             m_activeService = "telegram";
             showServiceThreads(std::string());
             updateStatus();
             return;
         }
-        if (m_telegram && m_telegram->needsAuth()) {
+        if (m_telegram && m_telegram->authenticating()) {
             showTelegramAuth();
             return;
         }
-        if (!m_telegram || !m_telegram->authenticating())
-            m_root->hideAuth();
+        m_root->hideAuth();
+        m_root->hideQr();
     }));
     m_backends.push_back(std::move(telegram));
     if (m_telegram->authenticating())
@@ -2030,6 +2040,14 @@ void MessagesWindow::showTelegramAuth()
 {
     if (!m_telegram)
         return;
+    if (!m_telegram->qrLink().empty()) {
+        m_root->hideAuth();
+        m_root->showQr(tr("Link Telegram"),
+                       tr("Telegram \u203a Settings \u203a Devices \u203a Link Desktop Device"),
+                       m_telegram->qrLink());
+        return;
+    }
+    m_root->hideQr();
     const bool secret = m_telegram->authKind() == TelegramBackend::AuthKind::Password;
     m_root->showAuth(m_telegram->authPrompt(), m_telegram->authDetail(), secret,
                      !m_telegram->needsAuth());
