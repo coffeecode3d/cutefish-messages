@@ -722,7 +722,7 @@ void TelegramBackend::loadThread(const Thread &thread)
     request.insert("chat_id", thread.threadId);
     request.insert("from_message_id", int64_t(0));
     request.insert("offset", 0);
-    request.insert("limit", 50);
+    request.insert("limit", 100);
     request.insert("only_local", false);
     request.insert("@extra", "history:" + std::to_string(thread.threadId));
     sendJson(request);
