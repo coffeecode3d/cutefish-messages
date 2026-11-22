@@ -3,8 +3,12 @@
 
 #include "messages_window.h"
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -71,6 +75,73 @@ int64_t nowMilliseconds()
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::system_clock::now().time_since_epoch())
             .count();
+}
+
+bool looksLikeUrl(const std::string &text, size_t at, size_t &length)
+{
+    static const std::array<const char *, 3> schemes = {"https://", "http://", "www."};
+    for (const char *scheme : schemes) {
+        const size_t size = std::strlen(scheme);
+        if (text.compare(at, size, scheme) != 0)
+            continue;
+        size_t end = at + size;
+        while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])))
+            ++end;
+        // Trailing punctuation belongs to the sentence, not the address.
+        while (end > at && std::strchr(".,;:!?)]}'\"", text[end - 1]))
+            --end;
+        if (end - at <= size)
+            return false;
+        length = end - at;
+        return true;
+    }
+    return false;
+}
+
+std::vector<ui::Label::Span> spansFor(const std::string &text, bool &hasLink)
+{
+    std::vector<ui::Label::Span> spans;
+    size_t start = 0;
+    for (size_t at = 0; at < text.size();) {
+        size_t length = 0;
+        if (!looksLikeUrl(text, at, length)) {
+            ++at;
+            continue;
+        }
+        if (at > start) {
+            ui::Label::Span plain;
+            plain.text = text.substr(start, at - start);
+            spans.push_back(std::move(plain));
+        }
+        ui::Label::Span link;
+        link.text = text.substr(at, length);
+        link.link = link.text.rfind("www.", 0) == 0 ? "https://" + link.text : link.text;
+        link.underline = true;
+        spans.push_back(std::move(link));
+        hasLink = true;
+        at += length;
+        start = at;
+    }
+    if (!hasLink)
+        return {};
+    if (start < text.size()) {
+        ui::Label::Span plain;
+        plain.text = text.substr(start);
+        spans.push_back(std::move(plain));
+    }
+    return spans;
+}
+
+void openLink(const std::string &url)
+{
+    const pid_t child = ::fork();
+    if (child == 0) {
+        ::setsid();
+        ::execlp("xdg-open", "xdg-open", url.c_str(), static_cast<char *>(nullptr));
+        ::_exit(1);
+    }
+    if (child > 0)
+        ::waitpid(child, nullptr, 0);
 }
 
 int64_t secondsOf(const std::string &timestamp)
@@ -268,7 +339,13 @@ public:
         m_author->setFontSize(theme.smallFontSize());
         m_author->setFontFamily(theme.fontFamily);
         m_author->setColor(ui::ColorId::DisabledText);
-        m_body->setText(message.body);
+        bool hasLink = false;
+        const std::vector<ui::Label::Span> spans = spansFor(message.body, hasLink);
+        if (hasLink)
+            m_body->setSpans(spans);
+        else
+            m_body->setText(message.body);
+        m_hasLink = hasLink;
         m_body->setFontSize(theme.fontSize());
         m_body->setFontFamily(theme.fontFamily);
         m_body->setColor(message.outgoing ? ui::ColorId::HighlightedText : ui::ColorId::Text);
@@ -306,13 +383,24 @@ public:
         return m_bubbleHeight + (m_showTime ? 17.0 : 0.0);
     }
 
-    bool acceptsPointer() const override { return m_hasImage; }
+    bool acceptsPointer() const override { return m_hasImage || m_hasLink; }
     std::function<void(const std::string &)> onImage;
 
 protected:
     void pointerPress(const ui::PointerEvent &event) override
     {
-        if (m_hasImage && event.button == ui::MouseButton::Left && onImage)
+        if (event.button != ui::MouseButton::Left)
+            return;
+        if (m_hasLink) {
+            const ui::RectF body = m_body->geometry();
+            const std::string link = m_body->linkAt(
+                    {event.position.x - body.x, event.position.y - body.y});
+            if (!link.empty()) {
+                openLink(link);
+                return;
+            }
+        }
+        if (m_hasImage && onImage)
             onImage(m_image->source());
     }
 
@@ -350,6 +438,7 @@ private:
     ui::Label *m_time;
     bool m_hasImage = false;
     bool m_hasText = true;
+    bool m_hasLink = false;
     bool m_outgoing = false;
     bool m_showAuthor = false;
     bool m_showTime = true;
@@ -726,7 +815,9 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
         first.lastTimestamp = "2026-11-22T10:32:00";
         first.messages = {{"1", "Are we still on for lunch?", "2026-11-22T10:30:00", "", false, true},
                           {"2", "Yes — the usual place?", "2026-11-22T10:31:00", "", true, true},
-                          {"3", "Perfect. See you at one.", "2026-11-22T10:32:00", "", false, false}};
+                          {"3", "Perfect. See you at one.", "2026-11-22T10:32:00", "", false, false},
+                          {"4", "The menu is at https://example.com/menu if you want to look first.",
+                           "2026-11-22T10:33:00", "", false, true}};
         first.snippet = first.messages.back().body;
         first.unread = 1;
         Thread second;

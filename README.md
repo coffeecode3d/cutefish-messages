@@ -21,6 +21,8 @@ phone is the normal KDE Connect app.
   it does on the phone.
 - Unread dots, wrapped bubbles that hug their text, and timestamps where a
   conversation breaks.
+- Links in messages are underlined and open in the browser; pictures open at
+  the window's size.
 - Pairing from either side, with the code both screens show; the phone pins the
   app's certificate after that.
 
