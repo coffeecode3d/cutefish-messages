@@ -1002,7 +1002,7 @@ void MessagesWindow::reloadFromPhone()
             thread.name = prettyAddress(conversation.address);
         thread.snippet = conversation.snippet;
         thread.lastTimestamp = timestampOf(conversation.date);
-        thread.unread = conversation.read ? 0 : 1;
+        thread.unread = conversation.read || m_readThreads.count(conversation.threadId) ? 0 : 1;
         const auto cached = m_phoneThreads.find(conversation.threadId);
         if (cached != m_phoneThreads.end()) {
             for (const phone::SmsMessage &sms : cached->second)
@@ -1023,14 +1023,17 @@ void MessagesWindow::reloadFromPhone()
         if (index == m_current) {
             m_root->title()->setText(m_threads[size_t(index)].name);
             m_root->sidebar()->reload();
+            refreshOpenThread();
             return;
         }
         selectThread(index);
+        refreshOpenThread();
         return;
     }
     m_current = -1;
     if (!m_threads.empty()) {
         selectThread(0);
+        refreshOpenThread();
         return;
     }
     m_root->setEmptyText(m_phone && m_phone->isConnected()
@@ -1077,6 +1080,28 @@ void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessa
     }
 }
 
+void MessagesWindow::refreshOpenThread()
+{
+    if (!m_usePhone || !m_phone || m_current < 0 || m_current >= int(m_threads.size()))
+        return;
+    const int64_t thread = m_threads[size_t(m_current)].threadId;
+    if (thread == 0 || m_requestedThread == thread)
+        return;
+    int64_t cached = 0;
+    const auto held = m_phoneThreads.find(thread);
+    if (held != m_phoneThreads.end() && !held->second.empty())
+        cached = held->second.back().date;
+    int64_t summary = 0;
+    for (const phone::Conversation &conversation : m_conversations) {
+        if (conversation.threadId == thread)
+            summary = conversation.date;
+    }
+    if (summary > cached) {
+        m_requestedThread = thread;
+        m_phone->requestThread(thread);
+    }
+}
+
 void MessagesWindow::openImage(int64_t messageId, const std::string &path)
 {
     bool full = false;
@@ -1116,6 +1141,16 @@ void MessagesWindow::selectThread(int index)
         return;
     m_current = index;
     Thread &thread = m_threads[size_t(index)];
+    // Opening it here clears its dot, and keeps it cleared while this window
+    // is open even if the phone's app still reports it unread.
+    if (m_usePhone && thread.threadId != 0) {
+        m_readThreads.insert(thread.threadId);
+        thread.unread = 0;
+        for (phone::Conversation &conversation : m_conversations) {
+            if (conversation.threadId == thread.threadId)
+                conversation.read = true;
+        }
+    }
     m_root->title()->setText(thread.name);
     m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
     const std::string last = thread.messages.empty()

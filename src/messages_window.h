@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <memory>
 #include <vector>
 
@@ -44,6 +45,8 @@ private:
 
     void phoneMessages(int64_t threadId, std::vector<phone::SmsMessage> messages);
     void phoneAttachment(int64_t messageId, std::string path);
+    // Fetches the open thread again when a summary says it has news.
+    void refreshOpenThread();
     void openImage(int64_t messageId, const std::string &path);
     void applyTheme();
     void phoneConversations(std::vector<phone::Conversation> conversations);
@@ -59,6 +62,9 @@ private:
     int64_t m_shownThread = 0;
     // A thread already asked for, so a burst of summaries asks once.
     int64_t m_requestedThread = 0;
+    // Threads opened here, whose dots should stay cleared even while the
+    // phone's own app has not marked them read.
+    std::set<int64_t> m_readThreads;
     size_t m_shownCount = 0;
     std::string m_shownLast;
 
