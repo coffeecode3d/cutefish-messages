@@ -733,6 +733,41 @@ void PhoneLink::handlePacket(const std::string &type, const base::json::Value &p
     if (oneThread && thread >= 0 && thread == m_pendingThread) {
         m_pendingThread = 0;
         m_threads[thread] = messages;
+        // A fetched thread knows its newest message; the phone's per-thread
+        // summary can lag behind it, so let the message win and say so.
+        int64_t newest = 0;
+        const SmsMessage *last = nullptr;
+        for (const SmsMessage &message : messages) {
+            if (message.date >= newest) {
+                newest = message.date;
+                last = &message;
+            }
+        }
+        if (last) {
+            Conversation &conversation = m_conversations[thread];
+            conversation.threadId = thread;
+            conversation.date = newest;
+            conversation.snippet = !last->body.empty()
+                    ? last->body
+                    : (last->attachments.empty() ? std::string() : std::string("Photo"));
+            conversation.type = last->type;
+            conversation.read = last->read;
+            if (conversation.address.empty())
+                conversation.address = last->address;
+            conversation.addresses = last->addresses;
+            std::vector<Conversation> list;
+            list.reserve(m_conversations.size());
+            for (const auto &[id, known] : m_conversations)
+                list.push_back(known);
+            std::sort(list.begin(), list.end(),
+                      [](const Conversation &left, const Conversation &right) {
+                          return left.date > right.date;
+                      });
+            conversationsReceived(std::move(list));
+            std::fprintf(stderr, "phone: thread %lld has %zu messages, newest %lld\n",
+                         static_cast<long long>(thread), messages.size(),
+                         static_cast<long long>(newest));
+        }
         const std::vector<SmsMessage> copy = messages;
         threadReceived(thread, std::move(messages));
 
