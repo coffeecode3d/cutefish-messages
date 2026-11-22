@@ -106,6 +106,9 @@ bool SignalBackend::start(std::string &error)
         for (Message &message : thread.messages) {
             if (message.outgoing)
                 message.receipt = message.read ? "Read" : "Sent";
+            // An old picture whose bytes never landed is still a message.
+            if (message.body.empty() && message.attachmentPath.empty())
+                message.body = "Attachment";
         }
         thread.avatarPath = avatarFor(thread.key);
         m_threads[thread.key] = std::move(thread);
@@ -432,7 +435,9 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         if (thread.group && !name.empty())
             message.sender = name;
         thread.messages.push_back(message);
-        thread.snippet = body;
+        thread.snippet = body.empty() && attachments.isArray() && attachments.size() > 0
+                ? std::string("Photo")
+                : body;
         thread.lastTimestamp = message.timestamp;
         thread.unread = key == m_openKey ? 0 : 1;
         m_store.saveThread(thread);
@@ -500,7 +505,9 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         message.read = false;
         message.receipt = "Sent";
         thread.messages.push_back(message);
-        thread.snippet = body;
+        thread.snippet = body.empty() && attachments.isArray() && attachments.size() > 0
+                ? std::string("Photo")
+                : body;
         thread.lastTimestamp = message.timestamp;
         thread.unread = 0;
         m_store.saveThread(thread);
