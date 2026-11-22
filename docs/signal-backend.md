@@ -60,7 +60,10 @@ queryable history API.
 
 ## Status
 
-Daemon, JSON-RPC and the linking shape are verified. Not yet written: the
-link UI and QR rendering, the store, the JSON-RPC client, and the backend
-itself. The QR renderer will be a small vendored encoder rather than a shell
-call to `qrencode`, so the app keeps its system-library-only rule.
+Implemented: the JSON-RPC client, daemon spawning, linking through
+`startLink`/`finishLink`, the QR shown in a sheet (libqrencode), incoming and
+outgoing messages into the merged thread list, sends, read receipts, and group
+threads from `listGroups`.
+
+Next: the SQLite store so history survives a restart, attachments, typing
+indicators in the UI, and the service enable/disable state in the config.

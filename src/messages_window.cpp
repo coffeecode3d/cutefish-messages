@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "messages_window.h"
+
+#include <qrencode.h>
+#include "signal_backend.h"
 #include "sms_backend.h"
 
 #include <sys/wait.h>
@@ -609,6 +612,124 @@ private:
     int64_t m_messageId = 0;
 };
 
+// The linking code, drawn as modules from libqrencode.
+class QrView : public ui::View
+{
+public:
+    ~QrView() override
+    {
+        if (m_code)
+            QRcode_free(m_code);
+    }
+
+    void setText(const std::string &text)
+    {
+        if (m_code)
+            QRcode_free(m_code);
+        m_code = QRcode_encodeString(text.c_str(), 0, QR_ECLEVEL_L, QR_MODE_8, 1);
+        requestPaint();
+    }
+
+    ui::SizeF sizeHint() const override { return {220, 220}; }
+
+protected:
+    void paint(ui::Painter &painter) override
+    {
+        if (!m_code)
+            return;
+        const double side = std::min(geometry().width, geometry().height);
+        const double cell = std::floor(side / m_code->width);
+        const double used = cell * m_code->width;
+        const double ox = (geometry().width - used) / 2;
+        const double oy = (geometry().height - used) / 2;
+        painter.fillRect({ox, oy, used, used}, ui::Color::rgb(0xFFFFFF));
+        const ui::Color ink = ui::Color::rgb(0x000000);
+        for (int y = 0; y < m_code->width; ++y) {
+            for (int x = 0; x < m_code->width; ++x) {
+                if (m_code->data[y * m_code->width + x] & 1)
+                    painter.fillRect({ox + x * cell, oy + y * cell, cell, cell}, ink);
+            }
+        }
+    }
+
+private:
+    QRcode *m_code = nullptr;
+};
+
+// The sheet shown while the phone scans the linking code.
+class QrOverlay : public ui::View
+{
+public:
+    QrOverlay()
+        : m_title(addChild<ui::Label>(tr("Link Signal")))
+        , m_hint(addChild<ui::Label>(tr("Signal \u203a Settings \u203a Linked devices \u203a Link new device")))
+        , m_code(addChild<QrView>())
+    {
+        m_title->setFontSize(ui::Theme::current().fontSize() + 4);
+        m_title->setFadesWhenDisabled(false);
+        m_hint->setFontSize(ui::Theme::current().smallFontSize());
+        m_hint->setColor(ui::ColorId::DisabledText);
+        m_hint->setFadesWhenDisabled(false);
+        m_hint->setWrap(true);
+        m_hint->setTextAlignment(ui::Label::TextAlignment::Center);
+        setVisible(false);
+    }
+
+    void show(const std::string &uri)
+    {
+        m_code->setText(uri);
+        setVisible(true);
+        setFocus();
+        requestLayout();
+        requestPaint();
+    }
+
+    bool acceptsPointer() const override { return true; }
+    bool acceptsFocus() const override { return true; }
+
+protected:
+    void layout() override
+    {
+        const double width = std::min(420.0, geometry().width - 80);
+        m_card = {(geometry().width - width) / 2, 70, width, width - 110};
+        m_title->setGeometry({m_card.x + 20, m_card.y + 18, width - 40, 28});
+        m_hint->setGeometry({m_card.x + 40, m_card.y + 48, width - 80, 36});
+        m_code->setGeometry({m_card.x + 30, m_card.y + 90, width - 60, width - 170});
+    }
+
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        painter.fillRect({0, 0, geometry().width, geometry().height},
+                         ui::Color::rgb(0x000000).withAlpha(0.40));
+        painter.fillRoundedRect(m_card, 20,
+                                theme.darkMode ? ui::Color::rgb(0x1E1E20).withAlpha(0.98)
+                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.98));
+    }
+
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (event.position.x < m_card.x || event.position.x > m_card.x + m_card.width
+            || event.position.y < m_card.y || event.position.y > m_card.y + m_card.height)
+            setVisible(false);
+    }
+
+    bool keyPress(const ui::KeyEvent &event) override
+    {
+        if (event.key == ui::key::Escape) {
+            setVisible(false);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    ui::Label *m_title;
+    ui::Label *m_hint;
+    QrView *m_code;
+    ui::RectF m_card;
+};
+
 // The sidebar's footer: a quiet bar, not a floating pill, that opens Services.
 class ServicesPill : public ui::View
 {
@@ -702,7 +823,16 @@ public:
 
     bool acceptsPointer() const override { return true; }
     bool acceptsFocus() const override { return true; }
+    std::function<void()> onSignal;
     void open() { setVisible(true); setFocus(); requestPaint(); }
+
+    void setServiceState(size_t index, const std::string &detail)
+    {
+        if (index >= m_rows.size())
+            return;
+        m_rows[index].detail->setText(detail);
+        requestLayout();
+    }
 
     void setPhoneState(const std::string &detail)
     {
@@ -721,9 +851,11 @@ protected:
         m_title->setGeometry({m_card.x + 26, m_card.y + 20, width - 52, 28});
         m_subtitle->setGeometry({m_card.x + 26, m_card.y + 50, width - 52, 18});
         double y = m_card.y + 78;
+        m_rowRects.clear();
         for (const auto &[title, detail] : m_rows) {
             title->setGeometry({m_card.x + 26, y + 8, width - 52, 20});
             detail->setGeometry({m_card.x + 26, y + 28, width - 52, 18});
+            m_rowRects.push_back({m_card.x, y, m_card.width, 58});
             y += 58;
         }
         m_footer->setGeometry({m_card.x + 26, m_card.y + m_card.height - 30, width - 52, 18});
@@ -751,8 +883,18 @@ protected:
     void pointerPress(const ui::PointerEvent &event) override
     {
         if (event.position.x < m_card.x || event.position.x > m_card.x + m_card.width
-            || event.position.y < m_card.y || event.position.y > m_card.y + m_card.height)
+            || event.position.y < m_card.y || event.position.y > m_card.y + m_card.height) {
             setVisible(false);
+            return;
+        }
+        // The Signal row links; the rows above and below are informational.
+        if (m_rowRects.size() > 1) {
+            const ui::RectF &row = m_rowRects[1];
+            if (event.position.y >= row.y && event.position.y <= row.y + row.height && onSignal) {
+                setVisible(false);
+                onSignal();
+            }
+        }
     }
 
     bool keyPress(const ui::KeyEvent &event) override
@@ -774,6 +916,7 @@ private:
     ui::Label *m_subtitle;
     ui::Label *m_footer;
     std::vector<Row> m_rows;
+    std::vector<ui::RectF> m_rowRects;
     ui::RectF m_card;
 };
 
@@ -795,8 +938,10 @@ public:
         , m_viewer(addChild<ImageViewer>())
         , m_services(addChild<ServicesPill>())
         , m_accounts(addChild<AccountsSheet>())
+        , m_qr(addChild<QrOverlay>())
     {
         m_services->onClicked = [this] { m_accounts->open(); };
+        m_accounts->onSignal = [this] { m_window.linkSignal(); };
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
         setClipsChildren(true);
@@ -874,6 +1019,9 @@ public:
         m_viewer->show(id, path);
     }
 
+    void showQr(const std::string &uri) { m_qr->show(uri); }
+    void hideQr() { m_qr->setVisible(false); }
+
     void refreshServices()
     {
         bool ready = false;
@@ -886,6 +1034,13 @@ public:
         }
         m_services->setReady(ready);
         m_accounts->setPhoneState(phone);
+        for (const auto &backend : m_window.m_backends) {
+            if (backend->account().id != "signal")
+                continue;
+            m_accounts->setServiceState(1, backend->ready()
+                                               ? std::string("Linked")
+                                               : std::string("Not linked yet"));
+        }
     }
 
     // Rebuilds the conversation; the scroll to the newest message waits for
@@ -944,6 +1099,7 @@ protected:
         m_header->setGeometry({0, 0, width, 44});
         m_viewer->setGeometry({0, 0, width, height});
         m_accounts->setGeometry({0, 0, width, height});
+        m_qr->setGeometry({0, 0, width, height});
         m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
         m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - 44 - 40)});
         m_services->setGeometry({0, height - 40, kSidebar, 40});
@@ -979,6 +1135,7 @@ private:
     ImageViewer *m_viewer;
     ServicesPill *m_services;
     AccountsSheet *m_accounts;
+    QrOverlay *m_qr;
 };
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
@@ -1046,6 +1203,17 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
                     }));
             m_backends.push_back(std::move(sms));
 
+            auto signal = std::make_unique<SignalBackend>(loop);
+            std::string signalError;
+            if (signal->start(signalError)) {
+                m_signal = signal.get();
+                m_backendSubscriptions.push_back(
+                        signal->threadsChanged.connect([this] { reloadFromPhone(); }));
+                m_backendSubscriptions.push_back(
+                        signal->statusChanged.connect([this] { updateStatus(); }));
+                m_backends.push_back(std::move(signal));
+            }
+
             m_notifier = std::make_unique<Notifier>(loop);
             m_notifierSubscription = m_notifier->activated.connect(
                     [this](const std::string &key) { openConversation(key); });
@@ -1102,6 +1270,21 @@ void MessagesWindow::applyTheme()
     material.bevel = 24;
     material.rim = 0.35;
     setBackgroundGlass(material);
+}
+
+void MessagesWindow::linkSignal()
+{
+    if (!m_signal)
+        return;
+    m_signal->link(
+            [this](const std::string &uri) { m_root->showQr(uri); },
+            [this](bool ok, const std::string &error) {
+                m_root->hideQr();
+                if (!ok)
+                    m_root->status()->setText(error);
+                reloadFromPhone();
+                updateStatus();
+            });
 }
 
 void MessagesWindow::openImage(int64_t messageId, const std::string &path)

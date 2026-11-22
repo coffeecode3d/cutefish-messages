@@ -26,6 +26,7 @@ class Button;
 namespace cutefish::messages {
 
 class SidebarRow;
+class SignalBackend;
 class MessageRow;
 
 // Messages: conversations on the left, the chosen one and its composer on the
@@ -47,6 +48,7 @@ private:
 
     void openImage(int64_t messageId, const std::string &path);
     void openConversation(const std::string &key);
+    void linkSignal();
     void applyTheme();
     Backend *backendFor(const std::string &service) const;
     void updateAttachment(int64_t messageId, std::string path);
@@ -60,6 +62,7 @@ private:
 
     std::unique_ptr<MessagesClient> m_client;
     std::vector<std::unique_ptr<Backend>> m_backends;
+    SignalBackend *m_signal = nullptr;
     std::vector<base::Subscription> m_backendSubscriptions;
     std::unique_ptr<Notifier> m_notifier;
     base::Subscription m_notifierSubscription;

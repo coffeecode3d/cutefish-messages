@@ -6,19 +6,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CutefishToolkit REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(QRENCODE REQUIRED libqrencode)
 
 add_executable(cutefish-messages
     src/main.cpp
     src/messages_client.cpp
     src/notifier.cpp
     src/sms_backend.cpp
+    src/signal_rpc.cpp
+    src/signal_backend.cpp
     src/messages_window.cpp
     src/phone/discovery.cpp
     src/phone/certificate.cpp
     src/phone/link.cpp
 )
-target_include_directories(cutefish-messages PRIVATE src)
-target_link_libraries(cutefish-messages PRIVATE Cutefish::Toolkit OpenSSL::SSL OpenSSL::Crypto)
+target_include_directories(cutefish-messages PRIVATE src ${QRENCODE_INCLUDE_DIRS})
+target_link_libraries(cutefish-messages PRIVATE Cutefish::Toolkit OpenSSL::SSL OpenSSL::Crypto ${QRENCODE_LIBRARIES})
 
 add_executable(discovery-probe src/tools/discovery_probe.cpp src/phone/discovery.cpp)
 target_include_directories(discovery-probe PRIVATE src)
