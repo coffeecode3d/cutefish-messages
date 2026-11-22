@@ -176,7 +176,7 @@ void SmsBackend::rebuild()
         Thread thread;
         thread.key = "sms:" + std::to_string(conversation.threadId);
         thread.service = "sms";
-        thread.serviceName = "Phone";
+        thread.serviceName = "SMS";
         thread.threadId = conversation.threadId;
         thread.address = conversation.address;
         thread.addresses = conversation.addresses;

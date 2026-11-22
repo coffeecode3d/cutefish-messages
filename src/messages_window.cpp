@@ -752,7 +752,7 @@ class ServicesPill : public ui::View
 {
 public:
     ServicesPill()
-        : m_label(addChild<ui::Label>(tr("Services")))
+        : m_label(addChild<ui::Label>(tr("SMS")))
     {
         m_label->setFontSize(ui::Theme::current().smallFontSize());
         m_label->setVerticallyCentered(true);
@@ -762,18 +762,27 @@ public:
 
     bool acceptsPointer() const override { return true; }
     std::function<void()> onClicked;
-    void setReady(bool ready)
+
+    // The service the open conversation belongs to, so the bar names where you
+    // are rather than the sheet you can open.
+    void setService(const std::string &name, bool ready)
     {
-        if (m_ready == ready)
+        if (m_label->text() == name && m_ready == ready)
             return;
+        if (m_label->text() != name)
+            m_label->setText(name);
         m_ready = ready;
+        requestLayout();
         requestPaint();
     }
 
 protected:
     void layout() override
     {
-        m_label->setGeometry({42, 0, std::max(0.0, geometry().width - 60), geometry().height});
+        const double available = std::max(0.0, geometry().width - 60);
+        m_label->setGeometry({42, 0, available, geometry().height});
+        m_arrowX = std::min(42 + std::ceil(m_label->sizeHint().width) + 5,
+                            std::max(42.0, geometry().width - 18));
     }
 
     void paint(ui::Painter &painter) override
@@ -787,6 +796,13 @@ protected:
                                       : (theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.25)
                                                         : ui::Color::rgb(0x000000).withAlpha(0.20));
         painter.fillEllipse({18, (geometry().height - 16) / 2, 16, 16}, dot);
+        // A quiet chevron, pointing up at the sheet this opens.
+        const ui::Color arrow = theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.38)
+                                               : ui::Color::rgb(0x000000).withAlpha(0.35);
+        const double cx = m_arrowX + 3;
+        const double cy = geometry().height / 2 - 1;
+        painter.drawLine({cx - 3, cy + 2}, {cx, cy - 1.5}, arrow, 1.4);
+        painter.drawLine({cx, cy - 1.5}, {cx + 3, cy + 2}, arrow, 1.4);
     }
 
     void pointerPress(const ui::PointerEvent &event) override
@@ -797,6 +813,7 @@ protected:
 
 private:
     ui::Label *m_label;
+    double m_arrowX = 60;
     bool m_ready = false;
 };
 
@@ -1097,7 +1114,21 @@ public:
             ready = backend->ready();
             phone = ready ? backend->statusLine() : std::string("Not connected");
         }
-        m_services->setReady(ready);
+        std::string name = "SMS";
+        std::string service = "sms";
+        if (m_window.m_current >= 0
+            && m_window.m_current < int(m_window.m_threads.size())) {
+            const Thread &thread = m_window.m_threads[size_t(m_window.m_current)];
+            service = thread.service;
+            if (!thread.serviceName.empty())
+                name = thread.serviceName;
+        }
+        bool serviceReady = ready;
+        for (const auto &backend : m_window.m_backends) {
+            if (backend->account().id == service)
+                serviceReady = backend->ready();
+        }
+        m_services->setService(name, serviceReady);
         m_accounts->setPhoneState(phone);
         for (const auto &backend : m_window.m_backends) {
             if (backend->account().id != "signal")
@@ -1492,7 +1523,7 @@ void MessagesWindow::selectThread(int index)
     m_current = index;
     Thread &thread = m_threads[size_t(index)];
     // Opening it clears its dot; the backend remembers that for this session.
-    if (m_usePhone && thread.threadId != 0) {
+    if (m_usePhone) {
         thread.unread = 0;
         if (Backend *backend = backendFor(thread.service)) {
             backend->markRead(thread);
@@ -1501,6 +1532,7 @@ void MessagesWindow::selectThread(int index)
     }
     m_root->title()->setText(thread.name);
     m_root->subtitle()->setText(thread.group ? tr("Group conversation") : std::string());
+    m_root->refreshServices();
     const std::string last = thread.messages.empty()
             ? std::string()
             : thread.messages.back().timestamp + thread.messages.back().body;
