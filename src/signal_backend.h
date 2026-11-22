@@ -11,6 +11,7 @@
 
 #include "backend.h"
 #include "signal_rpc.h"
+#include "signal_store.h"
 
 namespace cutefish::messages {
 
@@ -32,7 +33,7 @@ public:
     void refresh() override;
 
     std::vector<Thread> threads() const override;
-    void loadThread(const Thread &thread) override { (void)thread; }
+    void loadThread(const Thread &thread) override;
     void markRead(const Thread &thread) override;
     bool send(const Thread &thread, const std::string &body, std::string &error) override;
     void fetchAttachment(int64_t messageId) override { (void)messageId; }
@@ -54,7 +55,10 @@ private:
     std::string m_binary;
     std::string m_dataDir;
     std::string m_socket;
+    std::string m_storePath;
     std::string m_account;
+    std::string m_openKey;
+    SignalStore m_store;
     bool m_linked = false;
     bool m_receiving = false;
     std::map<std::string, Thread> m_threads;

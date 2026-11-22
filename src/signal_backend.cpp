@@ -43,8 +43,15 @@ SignalBackend::SignalBackend(base::EventLoop *loop)
 {
     const char *override = std::getenv("CUTEFISH_SIGNAL_CLI");
     m_binary = override ? override : "signal-cli";
-    m_dataDir = homePath("XDG_DATA_HOME", "/.local/share") + "/cutefish/messages/signal";
+    const std::string root = homePath("XDG_DATA_HOME", "/.local/share") + "/cutefish/messages";
+    m_dataDir = root + "/signal";
+    m_storePath = root + "/signal.db";
     m_socket = homePath("XDG_RUNTIME_DIR", "/tmp") + "/cutefish-messages-signal.sock";
+
+    std::error_code code;
+    std::filesystem::create_directories(root, code);
+    std::string storeError;
+    m_store.open(m_storePath, storeError);
 
     m_subscriptions.push_back(m_rpc.notification.connect(
             [this](const base::json::Value &params) { handleNotification(params); }));
@@ -73,6 +80,11 @@ bool SignalBackend::ensureDaemon(std::string &error)
 
 bool SignalBackend::start(std::string &error)
 {
+    // History is ours; signal-cli keeps none. Load it before the helper, so
+    // the list is there even when no account is linked.
+    for (Thread &thread : m_store.load())
+        m_threads[thread.key] = std::move(thread);
+
     // Only start the helper when there is an account to serve; otherwise the
     // service stays offered in the sheet and the daemon starts on linking.
     std::error_code code;
@@ -175,6 +187,7 @@ void SignalBackend::refresh()
                 continue;
             Thread &thread = threadFor("signal:g:" + id, stringOr(group["name"], "Group"), true);
             thread.group = true;
+            m_store.saveThread(thread);
         }
         threadsChanged();
     });
@@ -224,10 +237,12 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         message.timestamp = timestampOf(when);
         if (thread.group && !name.empty())
             message.sender = name;
-        thread.messages.push_back(std::move(message));
+        thread.messages.push_back(message);
         thread.snippet = body;
-        thread.lastTimestamp = timestampOf(when);
-        thread.unread = 1;
+        thread.lastTimestamp = message.timestamp;
+        thread.unread = key == m_openKey ? 0 : 1;
+        m_store.saveThread(thread);
+        m_store.saveMessage(thread.key, message);
         threadsChanged();
         return;
     }
@@ -240,8 +255,10 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
                 if (!message.outgoing)
                     continue;
                 for (size_t i = 0; i < timestamps.size(); ++i) {
-                    if (timestamps[i].toInt() == message.id)
-                        message.read = true;
+                    if (timestamps[i].toInt() != message.id)
+                        continue;
+                    message.read = true;
+                    m_store.setMessageRead(key, message.id);
                 }
             }
         }
@@ -276,9 +293,12 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         message.body = body;
         message.timestamp = timestampOf(when);
         message.outgoing = true;
-        thread.messages.push_back(std::move(message));
+        thread.messages.push_back(message);
         thread.snippet = body;
-        thread.lastTimestamp = timestampOf(when);
+        thread.lastTimestamp = message.timestamp;
+        thread.unread = 0;
+        m_store.saveThread(thread);
+        m_store.saveMessage(thread.key, message);
         threadsChanged();
     }
 }
@@ -324,8 +344,19 @@ std::vector<Thread> SignalBackend::threads() const
     return list;
 }
 
+void SignalBackend::loadThread(const Thread &thread)
+{
+    m_openKey = thread.key;
+}
+
 void SignalBackend::markRead(const Thread &thread)
 {
+    m_openKey = thread.key;
+    const auto found = m_threads.find(thread.key);
+    if (found != m_threads.end()) {
+        found->second.unread = 0;
+        m_store.markThreadRead(thread.key);
+    }
     if (!m_linked || thread.group)
         return;
     int64_t newest = 0;
@@ -383,9 +414,12 @@ bool SignalBackend::send(const Thread &thread, const std::string &body, std::str
         message.body = body;
         message.timestamp = timestampOf(when);
         message.outgoing = true;
-        target.messages.push_back(std::move(message));
+        target.messages.push_back(message);
         target.snippet = body;
-        target.lastTimestamp = timestampOf(when);
+        target.lastTimestamp = message.timestamp;
+        target.unread = 0;
+        m_store.saveThread(target);
+        m_store.saveMessage(target.key, message);
         threadsChanged();
     });
     return true;

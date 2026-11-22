@@ -8,6 +8,7 @@ find_package(CutefishToolkit REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(QRENCODE REQUIRED libqrencode)
+pkg_check_modules(SQLITE REQUIRED sqlite3)
 
 add_executable(cutefish-messages
     src/main.cpp
@@ -16,17 +17,22 @@ add_executable(cutefish-messages
     src/sms_backend.cpp
     src/signal_rpc.cpp
     src/signal_backend.cpp
+    src/signal_store.cpp
     src/messages_window.cpp
     src/phone/discovery.cpp
     src/phone/certificate.cpp
     src/phone/link.cpp
 )
-target_include_directories(cutefish-messages PRIVATE src ${QRENCODE_INCLUDE_DIRS})
-target_link_libraries(cutefish-messages PRIVATE Cutefish::Toolkit OpenSSL::SSL OpenSSL::Crypto ${QRENCODE_LIBRARIES})
+target_include_directories(cutefish-messages PRIVATE src ${QRENCODE_INCLUDE_DIRS} ${SQLITE_INCLUDE_DIRS})
+target_link_libraries(cutefish-messages PRIVATE Cutefish::Toolkit OpenSSL::SSL OpenSSL::Crypto ${QRENCODE_LIBRARIES} ${SQLITE_LIBRARIES})
 
 add_executable(discovery-probe src/tools/discovery_probe.cpp src/phone/discovery.cpp)
 target_include_directories(discovery-probe PRIVATE src)
 target_link_libraries(discovery-probe PRIVATE Cutefish::ToolkitBase)
+
+add_executable(store-probe src/tools/store_probe.cpp src/signal_store.cpp)
+target_include_directories(store-probe PRIVATE src ${SQLITE_INCLUDE_DIRS})
+target_link_libraries(store-probe PRIVATE Cutefish::ToolkitBase ${SQLITE_LIBRARIES})
 
 add_executable(pair-probe src/tools/pair_probe.cpp
     src/phone/discovery.cpp src/phone/certificate.cpp src/phone/link.cpp)

@@ -11,9 +11,9 @@ Verified against signal-cli 0.14.10, native build (no JVM):
 - `signal-cli` ships a single native 408 MB binary; no Java is needed.
 - `signal-cli daemon --socket=<path>` starts multi-account JSON-RPC 2.0 over a
   Unix socket, newline-delimited. `listAccounts` answers `[]` before linking.
-- Linking is **not** a daemon method yet: `link` returns `-32601 Method not
-  implemented`. It is the CLI command `signal-cli link -n "Cutefish Messages"`,
-  which prints a `sgnl://linkdevice?...` URI and waits for the phone to scan it.
+- In multi-account mode the daemon exposes `startLink` and `finishLink`; the
+  app links itself from the Services sheet without a separate CLI process.
+  `startLink` returns the `sgnl://linkdevice?...` URI for the QR code.
 - The daemon exposes contacts, groups, sending, receipts, typing and receive
   notifications. It does **not** expose stored conversation history, so the
   backend keeps its own store.
@@ -26,14 +26,12 @@ cutefish-messages ──JSON-RPC/UDS──▶ signal-cli daemon ──▶ Signal
         └──────── local message store ───────┘  (threads, messages, read state)
 ```
 
-1. The Services sheet offers **Add Signal**. Choosing it writes
-   `services=signal` to the app's config and starts the link flow.
-2. Linking runs `signal-cli link -n "Cutefish Messages"`, reads the `sgnl://`
-   URI from its output, renders it as a QR code in the sheet, and waits. When
-   the phone confirms, signal-cli stores the account under its own data dir and
-   the link process exits 0.
-3. The backend then starts `signal-cli daemon --socket=$XDG_RUNTIME_DIR/cutefish/messages-signal.sock`
-   with `--account <number>`.
+1. The Services sheet offers **Signal**. Choosing it starts the link flow.
+2. `startLink` returns the `sgnl://` URI, which is drawn as a QR code in the
+   sheet; `finishLink` waits for the phone to confirm. signal-cli stores the
+   account under its own data dir.
+3. The backend runs `signal-cli daemon --socket=$XDG_RUNTIME_DIR/cutefish-messages-signal.sock`
+   in multi-account mode, so each account-scoped call names its account.
 4. Conversations come from the local store, seeded by `listContacts` and
    `listGroups`; incoming envelopes arrive as daemon notifications. Everything
    the user sends is recorded locally when the send succeeds.
@@ -62,8 +60,9 @@ queryable history API.
 
 Implemented: the JSON-RPC client, daemon spawning, linking through
 `startLink`/`finishLink`, the QR shown in a sheet (libqrencode), incoming and
-outgoing messages into the merged thread list, sends, read receipts, and group
-threads from `listGroups`.
+outgoing messages into the merged thread list, sends, read receipts, group
+threads from `listGroups`, and a SQLite store (`signal.db`) for threads,
+messages, read state and unread marks.
 
-Next: the SQLite store so history survives a restart, attachments, typing
-indicators in the UI, and the service enable/disable state in the config.
+Next: attachments, typing indicators in the UI, contact names from
+`listContacts`, and the service enable/disable state in the config.
