@@ -455,21 +455,21 @@ public:
 
     double heightForWidth(double width) const override
     {
-        const double rowWidth = std::max(0.0, width - 16);
-        double total = 8;
-        for (size_t i = 0; i < m_bubbles.size(); ++i) {
-            if (i > 0 && breaksGroup(i))
-                total += 10;
-            total += m_bubbles[i]->measure(rowWidth) + 4;
-        }
-        return total + 8;
+        return std::max(neededHeight(width), m_minimumHeight);
     }
+
+    // The viewport's height, so a short conversation still sits on the floor of
+    // the window as iMessage's does rather than hanging from the top.
+    void setMinimumHeight(double height) { m_minimumHeight = height; }
 
 protected:
     void layout() override
     {
         const double rowWidth = std::max(0.0, geometry().width - 16);
-        double y = 8;
+        const double needed = neededHeight(geometry().width);
+        double y = geometry().height > needed
+                ? geometry().height - needed + 8
+                : 8;
         for (size_t i = 0; i < m_bubbles.size(); ++i) {
             if (i > 0 && breaksGroup(i))
                 y += 10;
@@ -494,6 +494,18 @@ public:
     }
 
 private:
+    double neededHeight(double width) const
+    {
+        const double rowWidth = std::max(0.0, width - 16);
+        double total = 8;
+        for (size_t i = 0; i < m_bubbles.size(); ++i) {
+            if (i > 0 && breaksGroup(i))
+                total += 10;
+            total += m_bubbles[i]->measure(rowWidth) + 4;
+        }
+        return total + 8;
+    }
+
     bool breaksGroup(size_t i) const
     {
         return m_messages[i].outgoing != m_messages[i - 1].outgoing
@@ -502,6 +514,7 @@ private:
 
     std::vector<Message> m_messages;
     std::vector<BubbleView *> m_bubbles;
+    double m_minimumHeight = 0;
     bool m_group = false;
 };
 
@@ -924,6 +937,59 @@ private:
     ui::RectF m_card;
 };
 
+// The conversation's scroll view. Scrolls to the newest message in layout, when
+// the content's height is known, rather than on a timer that can fire early.
+class MessageList : public ui::ScrollView
+{
+public:
+    void scrollToNewest()
+    {
+        m_toNewest = true;
+        m_stickToNewest = true;
+        requestLayout();
+    }
+
+    // The reader is on the newest message, so new ones may pull the view down.
+    bool atNewest() const { return m_stickToNewest; }
+    double offset() const { return scrollPosition().y; }
+
+protected:
+    void layout() override
+    {
+        if (auto *conversation = dynamic_cast<ConversationView *>(contentView()))
+            conversation->setMinimumHeight(geometry().height);
+        // Growth moves the maximum, not the reader: only a scroll outside a
+        // layout may end the stay on the newest message.
+        m_inLayout = true;
+        ui::ScrollView::layout();
+        // Laying out the new content applies the old position, which would
+        // otherwise clear the stick flag we just set.
+        if (m_toNewest) {
+            m_toNewest = false;
+            m_stickToNewest = true;
+        }
+        // Stay on the newest message while the conversation grows under us,
+        // e.g. as a loaded thread's later messages land, unless the reader has
+        // scrolled away from the bottom.
+        if (m_stickToNewest)
+            setScrollPosition({0, contentSize().height});
+        m_inLayout = false;
+    }
+
+    void positionChanged() override
+    {
+        if (m_inLayout)
+            return;
+        const double maximum = std::max(0.0, contentSize().height - geometry().height);
+        m_stickToNewest = scrollPosition().y >= maximum - 1.0;
+    }
+
+private:
+    bool m_toNewest = false;
+    bool m_stickToNewest = false;
+    bool m_inLayout = false;
+};
+
 class MessagesWindow::RootView : public ui::View
 {
 public:
@@ -934,7 +1000,7 @@ public:
         , m_sidebar(addChild<ui::ListView>())
         , m_title(addChild<ui::Label>())
         , m_subtitle(addChild<ui::Label>())
-        , m_messages(addChild<ui::ScrollView>())
+        , m_messages(addChild<MessageList>())
         , m_empty(addChild<ui::Label>())
         , m_composer(addChild<ui::TextField>())
         , m_send(addChild<SendButton>())
@@ -969,11 +1035,6 @@ public:
         m_messages->setVerticalBarPolicy(ui::ScrollView::BarPolicy::AsNeeded);
         m_messages->setVerticalBarPadding(6, 6);
         m_messages->setBarsBelowContent(false);
-        m_scrollToEnd.setSingleShot(true);
-        m_scrollToEnd.setInterval(std::chrono::milliseconds(30));
-        m_scrollToEnd.onTimeout = [this] {
-            m_messages->setScrollPosition({0, m_messages->contentSize().height});
-        };
 
         m_title->setFontSize(ui::Theme::current().fontSize() + 3);
         m_title->setFadesWhenDisabled(false);
@@ -1049,13 +1110,20 @@ public:
 
     // Rebuilds the conversation; the scroll to the newest message waits for
     // the content's height to be known.
-    void showMessages(const std::vector<Message> &messages, bool group)
+    void showMessages(const std::vector<Message> &messages, bool group, bool sameThread)
     {
+        // A message landing in the conversation being read must not pull a
+        // reader who has scrolled up back to the end.
+        const bool keepPlace = sameThread && !m_messages->atNewest();
+        const double offset = m_messages->offset();
         m_messages->setContentView(std::make_unique<ConversationView>(
                 messages, group, [this](int64_t id, const std::string &path) {
                     m_window.openImage(id, path);
                 }));
-        m_scrollToEnd.start();
+        if (keepPlace)
+            m_messages->setScrollPosition({0, offset});
+        else
+            m_messages->scrollToNewest();
     }
     ui::TextField *composer() const { return m_composer; }
     SendButton *sendButton() const { return m_send; }
@@ -1130,8 +1198,7 @@ private:
     ui::ListView *m_sidebar;
     ui::Label *m_title;
     ui::Label *m_subtitle;
-    ui::ScrollView *m_messages;
-    base::Timer m_scrollToEnd{base::EventLoop::current()};
+    MessageList *m_messages;
     ui::Label *m_empty;
     ui::TextField *m_composer;
     SendButton *m_send;
@@ -1437,12 +1504,13 @@ void MessagesWindow::selectThread(int index)
     const std::string last = thread.messages.empty()
             ? std::string()
             : thread.messages.back().timestamp + thread.messages.back().body;
-    if (m_shownKey != thread.key || m_shownCount != thread.messages.size()
+    const bool sameThread = m_shownKey == thread.key;
+    if (!sameThread || m_shownCount != thread.messages.size()
         || m_shownLast != last) {
         m_shownKey = thread.key;
         m_shownCount = thread.messages.size();
         m_shownLast = last;
-        m_root->showMessages(thread.messages, thread.group);
+        m_root->showMessages(thread.messages, thread.group, sameThread);
     }
     m_root->sidebar()->reload();
     m_root->setEmptyText(thread.messages.empty() ? tr("Loading…") : std::string());
