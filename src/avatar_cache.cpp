@@ -4,6 +4,7 @@
 #include "avatar_cache.h"
 
 #include <cstdint>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -124,6 +125,54 @@ std::string saveAvatar(const std::string &key, const std::string &bytes)
     if (code) {
         std::filesystem::remove(path, code);
         std::error_code ignored;
+        std::filesystem::rename(temporary, path, ignored);
+    }
+    return std::filesystem::exists(path) ? path : std::string();
+}
+
+std::string saveAttachmentBase64(const std::string &threadKey, int64_t messageId,
+                                 size_t index, const std::string &extension,
+                                 const std::string &base64)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char c : threadKey) {
+        hash ^= c;
+        hash *= 1099511628211ULL;
+    }
+    char name[64] = {};
+    std::snprintf(name, sizeof(name), "%016llx-%lld-%zu%s",
+                  static_cast<unsigned long long>(hash), static_cast<long long>(messageId),
+                  index, extension.c_str());
+    std::string root;
+    if (const char *value = std::getenv("XDG_CACHE_HOME"))
+        root = value;
+    else if (const char *home = std::getenv("HOME"))
+        root = std::string(home) + "/.cache";
+    else
+        root = "/tmp";
+    const std::string directory = root + "/cutefish/messages/attachments";
+    std::error_code code;
+    std::filesystem::create_directories(directory, code);
+    const std::string path = directory + "/" + name;
+    const std::string temporary = path + ".part";
+
+    const auto comma = base64.find(',');
+    const std::string body = comma == std::string::npos ? base64 : base64.substr(comma + 1);
+    const std::string bytes = decodeBase64(body);
+    if (bytes.empty())
+        return {};
+    {
+        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+        if (!file)
+            return {};
+        file.write(bytes.data(), std::streamsize(bytes.size()));
+        if (!file)
+            return {};
+    }
+    std::filesystem::rename(temporary, path, code);
+    if (code) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
         std::filesystem::rename(temporary, path, ignored);
     }
     return std::filesystem::exists(path) ? path : std::string();

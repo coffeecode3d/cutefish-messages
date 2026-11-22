@@ -1432,6 +1432,10 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
             for (auto &backend : m_backends) {
                 m_backendSubscriptions.push_back(backend->typingChanged.connect(
                         [this](const std::string &key, bool typing) { onTyping(key, typing); }));
+                m_backendSubscriptions.push_back(backend->attachmentReady.connect(
+                        [this](int64_t id, std::string path) {
+                            updateAttachment(id, std::move(path));
+                        }));
             }
 
             m_typingStop.setSingleShot(true);

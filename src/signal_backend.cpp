@@ -32,6 +32,24 @@ std::string timestampOf(int64_t milliseconds)
     return text;
 }
 
+std::string extensionFor(const std::string &contentType, const std::string &filename)
+{
+    const auto dot = filename.rfind('.');
+    if (dot != std::string::npos && dot + 1 < filename.size() && filename.size() - dot <= 6)
+        return filename.substr(dot);
+    if (contentType.find("jpeg") != std::string::npos || contentType.find("jpg") != std::string::npos)
+        return ".jpg";
+    if (contentType.find("png") != std::string::npos)
+        return ".png";
+    if (contentType.find("webp") != std::string::npos)
+        return ".webp";
+    if (contentType.find("gif") != std::string::npos)
+        return ".gif";
+    if (contentType.find("mp4") != std::string::npos || contentType.find("video") != std::string::npos)
+        return ".mp4";
+    return ".bin";
+}
+
 std::string stringOr(const base::json::Value &value, std::string fallback = {})
 {
     return value.isString() ? value.toString() : std::move(fallback);
@@ -172,6 +190,58 @@ void SignalBackend::link(LinkUri onUri, LinkDone done)
     });
 }
 
+void SignalBackend::fetchImage(const std::string &threadKey, int64_t messageId,
+                               const std::string &groupId, const std::string &recipient,
+                               const base::json::Value &attachments)
+{
+    if (!attachments.isArray())
+        return;
+    for (size_t i = 0; i < attachments.size(); ++i) {
+        const base::json::Value &attachment = attachments[i];
+        const std::string type = stringOr(attachment["contentType"]);
+        if (type.rfind("image/", 0) != 0)
+            continue;
+        const std::string id = stringOr(attachment["id"]);
+        if (id.empty())
+            return;
+        const std::string extension = extensionFor(type, stringOr(attachment["filename"]));
+
+        base::json::Value params = base::json::Value::object();
+        params.insert("account", m_account);
+        params.insert("id", id);
+        if (!groupId.empty())
+            params.insert("groupId", groupId);
+        else
+            params.insert("recipient", recipient);
+
+        m_rpc.call("getAttachment", std::move(params),
+                   [this, threadKey, messageId, extension](bool ok,
+                                                           const base::json::Value &result,
+                                                           const std::string &) {
+            if (!ok)
+                return;
+            const std::string data = stringOr(result["data"]);
+            if (data.empty())
+                return;
+            const std::string path = saveAttachmentBase64(threadKey, messageId, 0, extension, data);
+            if (path.empty())
+                return;
+            const auto found = m_threads.find(threadKey);
+            if (found == m_threads.end())
+                return;
+            for (Message &message : found->second.messages) {
+                if (message.id != messageId)
+                    continue;
+                message.attachmentPath = path;
+                m_store.saveMessage(threadKey, message);
+                attachmentReady(messageId, path);
+                return;
+            }
+        });
+        return;
+    }
+}
+
 void SignalBackend::requestAvatar(Thread &thread)
 {
     if (thread.avatarPath.empty())
@@ -211,6 +281,7 @@ void SignalBackend::loadContacts()
 {
     base::json::Value params = base::json::Value::object();
     params.insert("account", m_account);
+    params.insert("allRecipients", true);
     m_rpc.call("listContacts", std::move(params),
                [this](bool ok, const base::json::Value &contacts, const std::string &) {
         if (!ok || !contacts.isArray())
@@ -220,11 +291,26 @@ void SignalBackend::loadContacts()
             const std::string number = stringOr(contact["number"]);
             if (number.empty())
                 continue;
-            std::string name = stringOr(contact["name"]);
+            // Signal adds a nickname of our own, which wins over the name the
+            // contact saved and over their profile name.
+            std::string name = stringOr(contact["nickName"]);
+            if (name.empty()) {
+                const std::string given = stringOr(contact["nickGivenName"]);
+                const std::string family = stringOr(contact["nickFamilyName"]);
+                if (!given.empty())
+                    name = family.empty() ? given : given + " " + family;
+            }
+            if (name.empty())
+                name = stringOr(contact["name"]);
+            if (name.empty()) {
+                const base::json::Value &profile = contact["profile"];
+                const std::string given = stringOr(profile["givenName"]);
+                const std::string family = stringOr(profile["familyName"]);
+                if (!given.empty())
+                    name = family.empty() ? given : given + " " + family;
+            }
             if (name.empty())
                 name = stringOr(contact["profileName"]);
-            if (name.empty())
-                name = stringOr(contact["nickName"]);
             if (!name.empty())
                 m_contactNames[number] = name;
         }
@@ -307,7 +393,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
 
     const base::json::Value &data = envelope["dataMessage"];
     if (data.isObject()) {
-        const std::string body = stringOr(data["message"]);
+        std::string body = stringOr(data["message"]);
         const base::json::Value &groupIdValue = data["groupInfo"]["groupId"];
         const std::string groupId = groupIdValue.isString() ? groupIdValue.toString() : std::string();
         const int64_t when = data["timestamp"].toInt(sent);
@@ -323,9 +409,21 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
             title = name.empty() ? from : name;
         }
         Thread &thread = threadFor(key, title, group);
+        if (!group && !name.empty() && m_contactNames.find(from) == m_contactNames.end()
+            && thread.name == from) {
+            thread.name = name;
+            m_store.saveThread(thread);
+        }
         requestAvatar(thread);
         if (hasMessage(thread, when))
             return;
+        const base::json::Value &attachments = data["attachments"];
+        if (body.empty() && attachments.isArray() && attachments.size() > 0
+            && stringOr(attachments[0]["contentType"]).rfind("image/", 0) != 0) {
+            body = stringOr(attachments[0]["filename"]);
+            if (body.empty())
+                body = "Attachment";
+        }
         Message message;
         message.id = when;
         message.handle = from;
@@ -339,6 +437,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         thread.unread = key == m_openKey ? 0 : 1;
         m_store.saveThread(thread);
         m_store.saveMessage(thread.key, message);
+        fetchImage(thread.key, message.id, groupId, from, attachments);
         threadsChanged();
         return;
     }
@@ -369,7 +468,14 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         const std::string destination = stringOr(sentMessage["destinationNumber"]);
         const std::string groupId = stringOr(sentMessage["groupInfo"]["groupId"]);
         const int64_t when = sentMessage["timestamp"].toInt(sent);
-        const std::string body = stringOr(sentMessage["message"]);
+        std::string body = stringOr(sentMessage["message"]);
+        const base::json::Value &attachments = sentMessage["attachments"];
+        if (body.empty() && attachments.isArray() && attachments.size() > 0
+            && stringOr(attachments[0]["contentType"]).rfind("image/", 0) != 0) {
+            body = stringOr(attachments[0]["filename"]);
+            if (body.empty())
+                body = "Attachment";
+        }
         std::string key;
         std::string title;
         bool group = false;
@@ -399,6 +505,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         thread.unread = 0;
         m_store.saveThread(thread);
         m_store.saveMessage(thread.key, message);
+        fetchImage(thread.key, message.id, groupId, destination, attachments);
         threadsChanged();
     }
 }

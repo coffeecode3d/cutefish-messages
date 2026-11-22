@@ -51,6 +51,10 @@ private:
     void beginReceive();
     void loadContacts();
     void requestAvatar(Thread &thread);
+    // Downloads the first picture of a message, if it has one.
+    void fetchImage(const std::string &threadKey, int64_t messageId,
+                    const std::string &groupId, const std::string &recipient,
+                    const base::json::Value &attachments);
     void handleNotification(const base::json::Value &params);
     void handleEnvelope(const base::json::Value &envelope);
     Thread &threadFor(const std::string &key, const std::string &name, bool group);
