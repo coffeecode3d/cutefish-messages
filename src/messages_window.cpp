@@ -27,6 +27,7 @@
 #include "ui/button.h"
 #include "ui/icon.h"
 #include "ui/image_view.h"
+#include "ui/file_chooser.h"
 #include "ui/menu.h"
 #include "ui/label.h"
 #include "ui/list_view.h"
@@ -586,6 +587,47 @@ private:
     bool m_group = false;
 };
 
+// The composer's plus: attach a picture or a file to the message.
+class AttachButton : public ui::View
+{
+public:
+    AttachButton()
+        : m_glyph(addChild<ui::Label>("+"))
+    {
+        m_glyph->setTextAlignment(ui::Label::TextAlignment::Center);
+        m_glyph->setVerticallyCentered(true);
+        m_glyph->setFadesWhenDisabled(false);
+        m_glyph->setFontSize(ui::Theme::current().fontSize() + 7);
+        m_glyph->setColor(ui::ColorId::DisabledText);
+    }
+
+    bool acceptsPointer() const override { return true; }
+    std::function<void()> onClicked;
+
+protected:
+    void layout() override
+    {
+        m_glyph->setGeometry({0, 0, geometry().width, geometry().height});
+    }
+
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        painter.fillEllipse({0, 0, geometry().width, geometry().height},
+                            theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.10)
+                                           : ui::Color::rgb(0x000000).withAlpha(0.06));
+    }
+
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (event.button == ui::MouseButton::Left && onClicked)
+            onClicked();
+    }
+
+private:
+    ui::Label *m_glyph;
+};
+
 class SendButton : public ui::View
 {
 public:
@@ -632,9 +674,16 @@ class ImageViewer : public ui::View
 public:
     ImageViewer()
         : m_image(addChild<ui::ImageView>())
+        , m_save(addChild<ui::Button>(tr("Save")))
+        , m_status(addChild<ui::Label>())
     {
         m_image->setFillMode(ui::ImageView::FillMode::PreserveAspectFit);
         m_image->setCornerRadius(12);
+        m_save->onClicked = [this] { save(); };
+        m_status->setFontSize(ui::Theme::current().smallFontSize());
+        m_status->setColor(ui::ColorId::DisabledText);
+        m_status->setTextAlignment(ui::Label::TextAlignment::Center);
+        m_status->setFadesWhenDisabled(false);
         setVisible(false);
     }
 
@@ -642,10 +691,56 @@ public:
     {
         m_messageId = messageId;
         m_image->setSource(path);
+        m_status->setText({});
         setVisible(true);
         setFocus();
         requestLayout();
         requestPaint();
+    }
+
+    void save()
+    {
+        if (m_image->source().empty())
+            return;
+        std::string folder = picturesDirectory();
+        m_chooser = std::make_unique<ui::FileChooser>(window());
+        m_chooser->setMode(ui::FileChooser::Mode::SaveFile);
+        m_chooser->setTitle(tr("Save Photo"));
+        m_chooser->setAcceptLabel(tr("Save"));
+        m_chooser->setCurrentFolder(folder);
+        m_chooser->setCurrentFile(folder + "/" + suggestedName());
+        m_chooser->onAccepted = [this](const std::vector<std::string> &paths, const std::string &) {
+            if (paths.empty())
+                return;
+            std::error_code code;
+            std::filesystem::copy_file(m_image->source(), paths.front(),
+                                       std::filesystem::copy_options::overwrite_existing, code);
+            m_status->setText(code ? tr("Could not save the picture.") : tr("Saved."));
+        };
+        m_chooser->open();
+    }
+
+    static std::string picturesDirectory()
+    {
+        if (const char *pictures = std::getenv("XDG_PICTURES_DIR"))
+            return pictures;
+        if (const char *home = std::getenv("HOME"))
+            return std::string(home) + "/Pictures";
+        return "/tmp";
+    }
+
+    std::string suggestedName() const
+    {
+        std::string extension = std::filesystem::path(m_image->source()).extension().string();
+        if (extension != ".jpg" && extension != ".jpeg" && extension != ".png"
+            && extension != ".gif" && extension != ".webp")
+            extension = ".jpg";
+        const std::time_t now = std::time(nullptr);
+        std::tm local {};
+        localtime_r(&now, &local);
+        char name[40] = {};
+        std::strftime(name, sizeof(name), "photo-%Y%m%d-%H%M%S", &local);
+        return std::string(name) + extension;
     }
 
     // The original arrived for what is on screen: show it instead.
@@ -664,7 +759,9 @@ protected:
     void layout() override
     {
         m_image->setGeometry({48, 40, std::max(0.0, geometry().width - 96),
-                              std::max(0.0, geometry().height - 80)});
+                              std::max(0.0, geometry().height - 96)});
+        m_save->setGeometry({geometry().width - 140, 16, 92, 30});
+        m_status->setGeometry({48, geometry().height - 46, std::max(0.0, geometry().width - 96), 20});
     }
 
     void paint(ui::Painter &painter) override
@@ -675,8 +772,11 @@ protected:
 
     void pointerPress(const ui::PointerEvent &event) override
     {
-        if (event.button == ui::MouseButton::Left)
-            setVisible(false);
+        if (event.button != ui::MouseButton::Left)
+            return;
+        if (m_save->geometry().contains(event.position))
+            return;
+        setVisible(false);
     }
 
     bool keyPress(const ui::KeyEvent &event) override
@@ -690,6 +790,9 @@ protected:
 
 private:
     ui::ImageView *m_image;
+    ui::Button *m_save;
+    ui::Label *m_status;
+    std::unique_ptr<ui::FileChooser> m_chooser;
     int64_t m_messageId = 0;
 };
 
@@ -1113,6 +1216,7 @@ public:
         , m_subtitle(addChild<ui::Label>())
         , m_messages(addChild<MessageList>())
         , m_empty(addChild<ui::Label>())
+        , m_attach(addChild<AttachButton>())
         , m_composer(addChild<ui::TextField>())
         , m_send(addChild<SendButton>())
         , m_status(addChild<ui::Label>())
@@ -1167,6 +1271,7 @@ public:
         m_composer->setPlaceholder(tr("Message"));
         m_composer->setTextMargins(12, 8);
         m_composer->setFontSize(ui::Theme::current().fontSize());
+        m_attach->onClicked = [this] { m_window.chooseAttachment(); };
         m_composer->onAccepted = [this] { m_window.send(); };
         m_composer->onTextChanged = [this] { m_window.noteTyping(); };
         m_send->onClicked = [this] { m_window.send(); };
@@ -1207,6 +1312,10 @@ public:
 
     void refreshServices()
     {
+        if (m_window.m_demo) {
+            m_services->setService("SMS", true);
+            return;
+        }
         bool ready = false;
         std::string phone = "SMS & MMS";
         for (const auto &backend : m_window.m_backends) {
@@ -1320,8 +1429,9 @@ protected:
                                  std::max(0.0, listBottom - listTop)});
         m_empty->setGeometry({left + 24, listTop, std::max(0.0, right - 48),
                               std::max(0.0, listBottom - listTop)});
-        m_composer->setGeometry({left + 16, height - kStatus - kComposer + 10,
-                                 std::max(0.0, right - 74), 36});
+        m_attach->setGeometry({left + 22, height - kStatus - kComposer + 9, 28, 28});
+        m_composer->setGeometry({left + 58, height - kStatus - kComposer + 10,
+                                 std::max(0.0, right - 116), 36});
         m_send->setGeometry({width - 56, height - kStatus - kComposer + 12, 32, 32});
         m_status->setGeometry({left + 18, height - kStatus + 4, std::max(0.0, right - 36), 20});
     }
@@ -1334,6 +1444,7 @@ private:
     ui::Label *m_title;
     ui::Label *m_subtitle;
     MessageList *m_messages;
+    AttachButton *m_attach;
     ui::Label *m_empty;
     ui::TextField *m_composer;
     SendButton *m_send;
@@ -1740,6 +1851,50 @@ void MessagesWindow::selectThread(int index)
         m_root->composer()->setPlaceholder(tr("Group replies are not in this version yet"));
     if (!m_usePhone && !m_demo)
         m_client->markRead(thread);
+}
+
+void MessagesWindow::chooseAttachment()
+{
+    if (m_current < 0 || m_current >= int(m_threads.size()))
+        return;
+    m_attachChooser = std::make_unique<ui::FileChooser>(this);
+    m_attachChooser->setMode(ui::FileChooser::Mode::OpenFile);
+    m_attachChooser->setTitle(tr("Attach File"));
+    ui::FileChooser::Filter images;
+    images.name = tr("Images");
+    images.mimeTypes = {"image/png", "image/jpeg", "image/webp", "image/gif"};
+    ui::FileChooser::Filter all;
+    all.name = tr("All Files");
+    all.patterns = {"*"};
+    m_attachChooser->setFilters({images, all});
+    m_attachChooser->setCurrentFilter(tr("Images"));
+    m_attachChooser->onAccepted = [this](const std::vector<std::string> &paths,
+                                         const std::string &) {
+        if (!paths.empty())
+            sendAttachment(paths.front());
+    };
+    m_attachChooser->open();
+}
+
+void MessagesWindow::sendAttachment(const std::string &path)
+{
+    if (m_current < 0 || m_current >= int(m_threads.size()))
+        return;
+    Thread &thread = m_threads[size_t(m_current)];
+    Backend *backend = backendFor(thread.service);
+    if (!backend)
+        return;
+    const std::string caption = m_root->composer()->text();
+    std::string error;
+    if (!backend->sendFile(thread, path, caption, error)) {
+        m_root->status()->setText(error);
+        return;
+    }
+    backend->sendTyping(thread, false);
+    m_typingStop.stop();
+    m_lastTypingSent = 0;
+    m_root->composer()->setText({});
+    reloadFromPhone();
 }
 
 void MessagesWindow::showThreadMenu(int index, ui::PointF position)

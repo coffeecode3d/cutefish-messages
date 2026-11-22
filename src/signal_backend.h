@@ -40,6 +40,8 @@ public:
     bool canDelete() const override { return true; }
     bool removeThread(const Thread &thread) override;
     bool send(const Thread &thread, const std::string &body, std::string &error) override;
+    bool sendFile(const Thread &thread, const std::string &path, const std::string &caption,
+                  std::string &error) override;
     void sendTyping(const Thread &thread, bool typing) override;
     void fetchAttachment(int64_t messageId) override { (void)messageId; }
 

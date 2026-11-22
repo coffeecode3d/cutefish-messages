@@ -101,9 +101,18 @@ public:
     std::string nameFor(const std::string &address) const;
     // The contact's picture, already written under the cache.
     std::string avatarFor(const std::string &address) const;
+    // A file for an MMS, already encoded as the protocol wants it.
+    struct OutgoingAttachment
+    {
+        std::string fileName;
+        std::string mimeType;
+        std::string base64;
+    };
     // Sends through the phone's SIM. False when there is no link.
     bool sendSms(const std::vector<std::string> &addresses, const std::string &body,
                  std::string &error);
+    bool sendSms(const std::vector<std::string> &addresses, const std::string &body,
+                 const std::vector<OutgoingAttachment> &attachments, std::string &error);
     // Records a message we just sent, so a later summary from the phone cannot
     // put the conversation back where it was.
     void noteSent(int64_t threadId, const std::string &body, int64_t date);

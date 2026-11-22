@@ -638,6 +638,80 @@ void SignalBackend::sendTyping(const Thread &thread, bool typing)
     m_rpc.call("sendTyping", std::move(params), nullptr);
 }
 
+bool SignalBackend::sendFile(const Thread &thread, const std::string &path,
+                             const std::string &caption, std::string &error)
+{
+    if (!m_linked) {
+        error = "Signal is not linked.";
+        return false;
+    }
+    std::error_code code;
+    if (!std::filesystem::exists(path, code)) {
+        error = "That file could not be read.";
+        return false;
+    }
+
+    base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
+    if (thread.group) {
+        params.insert("groupId", thread.address);
+    } else {
+        base::json::Value::Array recipients;
+        recipients.push_back(base::json::Value(thread.address));
+        params.insert("recipient", base::json::Value(std::move(recipients)));
+    }
+    if (!caption.empty())
+        params.insert("message", caption);
+    base::json::Value::Array attachments;
+    attachments.push_back(base::json::Value(path));
+    params.insert("attachments", base::json::Value(std::move(attachments)));
+
+    std::string filename = std::filesystem::path(path).filename().string();
+    std::string extension = std::filesystem::path(path).extension().string();
+    for (char &c : extension)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    const bool image = extension == ".jpg" || extension == ".jpeg" || extension == ".png"
+            || extension == ".gif" || extension == ".webp";
+    const std::string body = caption.empty() ? filename : caption;
+    const bool group = thread.group;
+    const std::string address = thread.address;
+
+    m_rpc.call("send", std::move(params),
+               [this, group, address, body, image, filename, path](
+                       bool ok, const base::json::Value &result, const std::string &) {
+        if (!ok) {
+            statusChanged();
+            return;
+        }
+        const int64_t when = result["timestamp"].toInt(
+                int64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count()));
+        const std::string key = group ? "signal:g:" + address : "signal:" + address;
+        Thread &target = threadFor(key, address, group);
+        Message message;
+        message.id = when;
+        message.handle = address;
+        message.body = body;
+        message.timestamp = timestampOf(when);
+        message.outgoing = true;
+        message.read = false;
+        message.receipt = "Sent";
+        if (image)
+            message.attachmentPath = path;
+        else
+            message.body = filename;
+        target.messages.push_back(message);
+        target.snippet = body;
+        target.lastTimestamp = message.timestamp;
+        target.unread = 0;
+        m_store.saveThread(target);
+        m_store.saveMessage(target.key, message);
+        threadsChanged();
+    });
+    return true;
+}
+
 bool SignalBackend::send(const Thread &thread, const std::string &body, std::string &error)
 {
     if (!m_linked) {

@@ -130,6 +130,34 @@ std::string saveAvatar(const std::string &key, const std::string &bytes)
     return std::filesystem::exists(path) ? path : std::string();
 }
 
+std::string base64Encode(const std::string &bytes)
+{
+    static const char alphabet[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    size_t i = 0;
+    while (i + 2 < bytes.size()) {
+        const uint32_t chunk = (uint32_t(uint8_t(bytes[i])) << 16)
+                | (uint32_t(uint8_t(bytes[i + 1])) << 8) | uint32_t(uint8_t(bytes[i + 2]));
+        out.push_back(alphabet[(chunk >> 18) & 63]);
+        out.push_back(alphabet[(chunk >> 12) & 63]);
+        out.push_back(alphabet[(chunk >> 6) & 63]);
+        out.push_back(alphabet[chunk & 63]);
+        i += 3;
+    }
+    if (i < bytes.size()) {
+        uint32_t chunk = uint32_t(uint8_t(bytes[i])) << 16;
+        if (i + 1 < bytes.size())
+            chunk |= uint32_t(uint8_t(bytes[i + 1])) << 8;
+        out.push_back(alphabet[(chunk >> 18) & 63]);
+        out.push_back(alphabet[(chunk >> 12) & 63]);
+        out.push_back(i + 1 < bytes.size() ? alphabet[(chunk >> 6) & 63] : '=');
+        out.push_back('=');
+    }
+    return out;
+}
+
 std::string saveAttachmentBase64(const std::string &threadKey, int64_t messageId,
                                  size_t index, const std::string &extension,
                                  const std::string &base64)

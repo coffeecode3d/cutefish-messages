@@ -22,6 +22,7 @@ class ListView;
 class Menu;
 class TextField;
 class Button;
+class FileChooser;
 } // namespace cutefish::ui
 
 namespace cutefish::messages {
@@ -51,6 +52,8 @@ private:
     void onTyping(const std::string &key, bool typing);
     void restoreSubtitle();
     void noteTyping();
+    void chooseAttachment();
+    void sendAttachment(const std::string &path);
     void showThreadMenu(int index, ui::PointF position);
     void setThreadRead(const std::string &key, bool unread);
     void markVisibleRead();
@@ -83,6 +86,7 @@ private:
     std::vector<base::Subscription> m_backendSubscriptions;
     std::unique_ptr<Notifier> m_notifier;
     std::unique_ptr<ui::Menu> m_threadMenu;
+    std::unique_ptr<ui::FileChooser> m_attachChooser;
     base::Subscription m_notifierSubscription;
     // The newest time already announced per thread, so a re-poll is quiet.
     std::map<std::string, std::string> m_notified;

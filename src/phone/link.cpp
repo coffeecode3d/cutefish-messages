@@ -1122,6 +1122,13 @@ void PhoneLink::noteSent(int64_t threadId, const std::string &body, int64_t date
 bool PhoneLink::sendSms(const std::vector<std::string> &addresses,
                         const std::string &body, std::string &error)
 {
+    return sendSms(addresses, body, {}, error);
+}
+
+bool PhoneLink::sendSms(const std::vector<std::string> &addresses,
+                        const std::string &body,
+                        const std::vector<OutgoingAttachment> &attachments, std::string &error)
+{
     if (!m_ssl) {
         error = "The phone is not connected.";
         return false;
@@ -1142,6 +1149,17 @@ bool PhoneLink::sendSms(const std::vector<std::string> &addresses,
     base::json::Value packetBody = base::json::Value::object();
     packetBody.insert("addresses", base::json::Value(std::move(entries)));
     packetBody.insert("messageBody", body);
+    if (!attachments.empty()) {
+        base::json::Value::Array list;
+        for (const OutgoingAttachment &attachment : attachments) {
+            base::json::Value entry = base::json::Value::object();
+            entry.insert("fileName", attachment.fileName);
+            entry.insert("mimeType", attachment.mimeType);
+            entry.insert("base64EncodedFile", attachment.base64);
+            list.push_back(std::move(entry));
+        }
+        packetBody.insert("attachments", base::json::Value(std::move(list)));
+    }
     packetBody.insert("version", 2);
     if (!sendPacket("kdeconnect.sms.request", std::move(packetBody))) {
         error = "The message could not be sent.";

@@ -1,49 +1,59 @@
 # Messages
 
-Cutefish's messaging app: your phone's text messages on the desktop, in a
-window that belongs in macOS Tahoe — a glass body, a frosted sidebar, and the
-conversation on its own paper.
+A native, all-in-one messaging app for CutefishOS.
 
 ![Messages](docs/screenshot.png)
 
-Texts arrive over Wi-Fi. Nothing of KDE runs on the desktop: the app speaks the
-published KDE Connect protocol itself, so the only thing to install on the
-phone is the normal KDE Connect app.
+Messages brings your phone's SMS and MMS and your Signal conversations into one
+quiet window built with the Cutefish Toolkit. It follows CutefishOS's design
+language — liquid glass, generous radii, a frosted sidebar and a conversation
+that reads like paper — and it is a native C++ application with no Qt or KDE
+runtime underneath.
 
-## What it does
+## Features
 
-- Conversations and full message history from the phone, newest first.
-- Contact names from the phone's address book, with numbers formatted when
-  there is no match.
-- Group conversations: participant names in the title and above each bubble,
-  and replies to every address.
-- MMS pictures: the newest few in a conversation download their originals
-  automatically, one at a time; older ones stay as the phone's preview until
-  you click them, and the viewer sharpens in place when the original lands.
-- Sending through the phone's SIM, with the conversation moving to the top as
-  it does on the phone.
-- Unread dots, wrapped bubbles that hug their text, and timestamps where a
-  conversation breaks.
-- Links in messages are underlined and open in the browser; pictures open at
-  the window's size.
-- A desktop notification for a text that arrives while its conversation is not
-  on screen; clicking it opens that conversation.
-- Pairing from either side, with the code both screens show; the phone pins the
-  app's certificate after that.
+- **One window, every service.** SMS/MMS from your Android phone and Signal,
+  shown one service at a time (SMS by default) or together under *All
+  conversations*.
+- **No KDE runtime.** The app speaks the published KDE Connect protocol itself;
+  the only thing installed on the phone is the normal KDE Connect app.
+- **Signal as a linked device**, through a native `signal-cli` helper with no
+  JVM. Optional, and its history, groups and read state live in a small local
+  SQLite store.
+- **Conversations that feel finished.** Contact names and pictures, group
+  threads with speakers above each bubble, links that open in the browser,
+  timestamps where a conversation breaks, and unread dots.
+- **Pictures and files.** Inline pictures, a full-size viewer with **Save
+  Photo**, and sending attachments alongside text from the composer.
+- **Presence where the service has it.** Signal read receipts show as
+  `Sent`/`Read` under your last bubble, and the other side's typing appears
+  under the conversation name.
+- **Desktop notifications** for messages that arrive when their conversation
+  is not on screen; clicking one opens it.
+- **Conversation actions.** Right-click or hold a row to mark it read or
+  unread, mark every conversation read, or delete local history where the
+  service allows it.
+
+## Services
+
+| Service | Status | Backend |
+| --- | --- | --- |
+| Phone (SMS & MMS) | Ready | Our own KDE Connect protocol implementation |
+| Signal | Ready | Native `signal-cli` as a linked device |
+| Telegram | In progress | — |
+| iPhone (BlueFerry) | Later | — |
+| RCS (Google Messages) | Not available | RCS is closed to third-party clients |
 
 ## Requirements
 
-- Cutefish Toolkit (`CutefishToolkit`), C++20, OpenSSL.
-- An Android phone on the same network with KDE Connect installed.
-- The compositor's glass for the window backdrop; without it the app still
-  works over a plain background.
+- CutefishOS with the Cutefish Toolkit (`CutefishToolkit`), C++20 and OpenSSL.
+- For SMS: an Android phone on the same network with KDE Connect installed.
+- For Signal: the native `signal-cli` binary, pointed at with
+  `CUTEFISH_SIGNAL_CLI` when it is not on `PATH`.
+- Build tools: CMake and Ninja. `libqrencode` and `sqlite3` are used for the
+  Signal linking code and store.
 
-## Install on CutefishOS
-
-This is an independent project, not part of the Cutefish organisation; the
-Cutefish maintainers declined to adopt it and suggested keeping it separate.
-
-Dependencies: `cutefish-toolkit`, OpenSSL, CMake and Ninja.
+## Install
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -51,10 +61,22 @@ ninja -C build
 sudo cmake --install build
 ```
 
-That installs the app, its desktop entry and icon. Pair the phone once, and
-the conversations appear.
+That installs the app, its desktop entry and icon.
 
-## Build
+## Use
+
+- **Phone:** open KDE Connect on the phone, choose the computer and pair. The
+  conversations appear when the phone is on the same network.
+- **Signal:** open the footer (it names the active service), choose **Signal**
+  and scan the linking code from *Signal → Settings → Linked devices → Link
+  new device*. Once linked, Signal joins the service list with history and
+  media.
+- Switch services from the footer at any time. **All conversations** mixes
+  them, with each preview labelled by its service.
+- Attach a picture or file with the **+** beside the composer. Click a picture
+  to view it and use **Save** to keep a copy.
+
+## Development
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -62,39 +84,24 @@ ninja -C build
 build/cutefish-messages
 ```
 
-`--demo` shows the window with made-up conversations, for working on the
+`--demo` opens the window with made-up conversations for working on the
 interface without a phone.
 
-## Pairing
+`docs/protocol-notes.md` records the KDE Connect packet details the SMS
+backend relies on. `docs/signal-backend.md` describes the Signal helper, its
+store and its limits.
 
-The phone finds the computer by broadcast; the computer listens on TCP 1716.
-Open KDE Connect on the phone, pick the computer, and choose *Request pairing*.
-Both sides show the same eight characters, which is the first four bytes of
-SHA-256 over the two certificates and the request's timestamp, in uppercase
-hex.
+## Limits
 
-See `docs/protocol-notes.md` for the packet details, the capabilities the phone
-requires before it answers, and the mistakes worth not repeating.
-
-## Known limits
-
-- Only SMS and MMS are visible. RCS chats live in the phone's own store and are
-  not part of the provider KDE Connect reads, so they never appear here, even
-  when Google Messages is the phone's messaging app.
-- Unread dots are cleared locally when a conversation is opened; the protocol
-  has no packet to mark a thread read on the phone.
-- Android only lets an app send MMS when it is the default SMS app. Group
-  replies work when KDE Connect has that role; with Google Messages installed
-  as the default, plain SMS still sends but MMS may not.
-- Notifications come from the 20-second conversation poll, so a text can take
-  that long to be announced if the phone does not push it.
-- Pinned conversations are a phone-app notion and are not carried by the
-  protocol.
-
-## Status
-
-Android over the KDE Connect protocol is in use daily. The iPhone backend
-(BlueFerry) is the next piece, behind the same window.
+- RCS is not available to third-party clients; RCS chats stay in the phone's
+  own app.
+- Sending MMS needs the phone's messaging app to be the default SMS app; plain
+  SMS always sends.
+- Signal is reached through the community `signal-cli`; Signal does not promise
+  that unofficial clients keep working.
+- iPhone support is waiting on BlueFerry and hardware to test it against.
+- Unread dots on the phone side are kept locally; the KDE Connect protocol has
+  no packet to mark a thread read on the phone.
 
 ## Licence
 

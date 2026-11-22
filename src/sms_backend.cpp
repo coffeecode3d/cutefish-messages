@@ -8,6 +8,10 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
+
+#include "avatar_cache.h"
 
 namespace cutefish::messages {
 
@@ -36,6 +40,28 @@ std::string timestampOf(int64_t milliseconds)
     char text[32] = {};
     std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S", &local);
     return text;
+}
+
+std::string mimeFor(const std::string &path)
+{
+    std::string extension = std::filesystem::path(path).extension().string();
+    for (char &c : extension)
+        c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (extension == ".jpg" || extension == ".jpeg")
+        return "image/jpeg";
+    if (extension == ".png")
+        return "image/png";
+    if (extension == ".gif")
+        return "image/gif";
+    if (extension == ".webp")
+        return "image/webp";
+    if (extension == ".mp4")
+        return "video/mp4";
+    if (extension == ".mp3")
+        return "audio/mpeg";
+    if (extension == ".pdf")
+        return "application/pdf";
+    return "application/octet-stream";
 }
 
 int64_t nowMilliseconds()
@@ -290,6 +316,57 @@ bool SmsBackend::send(const Thread &thread, const std::string &body, std::string
     sent.date = nowMilliseconds();
     sent.type = 2;
     sent.read = true;
+    m_messages[thread.threadId].push_back(sent);
+    m_phone.noteSent(thread.threadId, body, sent.date);
+    for (phone::Conversation &conversation : m_conversations) {
+        if (conversation.threadId == thread.threadId) {
+            conversation.date = sent.date;
+            conversation.snippet = body;
+            conversation.type = 2;
+        }
+    }
+    rebuild();
+    threadsChanged();
+    return true;
+}
+
+bool SmsBackend::sendFile(const Thread &thread, const std::string &path,
+                          const std::string &caption, std::string &error)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = "That file could not be read.";
+        return false;
+    }
+    const std::string bytes((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    if (bytes.empty()) {
+        error = "That file is empty.";
+        return false;
+    }
+
+    phone::PhoneLink::OutgoingAttachment attachment;
+    attachment.fileName = std::filesystem::path(path).filename().string();
+    attachment.mimeType = mimeFor(path);
+    attachment.base64 = base64Encode(bytes);
+
+    std::vector<std::string> recipients = thread.addresses;
+    if (recipients.empty())
+        recipients.push_back(thread.address);
+    if (!m_phone.sendSms(recipients, caption, {attachment}, error))
+        return false;
+
+    const std::string body = caption.empty() ? attachment.fileName : caption;
+    phone::SmsMessage sent;
+    sent.threadId = thread.threadId;
+    sent.address = thread.address;
+    sent.addresses = recipients;
+    sent.body = body;
+    sent.date = nowMilliseconds();
+    sent.type = 2;
+    sent.read = true;
+    if (mimeFor(path).rfind("image/", 0) == 0)
+        sent.fullPath = path;
     m_messages[thread.threadId].push_back(sent);
     m_phone.noteSent(thread.threadId, body, sent.date);
     for (phone::Conversation &conversation : m_conversations) {

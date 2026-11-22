@@ -19,6 +19,7 @@ std::string saveAvatarBase64(const std::string &key, const std::string &base64);
 
 // Message attachments, named by the conversation, message and part so a
 // restart finds the file again.
+std::string base64Encode(const std::string &bytes);
 std::string saveAttachmentBase64(const std::string &threadKey, int64_t messageId,
                                  size_t index, const std::string &extension,
                                  const std::string &base64);

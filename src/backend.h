@@ -56,6 +56,16 @@ public:
         return false;
     }
     virtual bool send(const Thread &thread, const std::string &body, std::string &error) = 0;
+    // Sends a file, with the composer text as its caption when it has one.
+    virtual bool sendFile(const Thread &thread, const std::string &path,
+                          const std::string &caption, std::string &error)
+    {
+        (void)thread;
+        (void)path;
+        (void)caption;
+        error = "This service cannot send attachments yet.";
+        return false;
+    }
     // Tells the service the user is composing, where it supports that.
     virtual void sendTyping(const Thread &thread, bool typing)
     {
