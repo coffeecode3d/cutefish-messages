@@ -3,6 +3,8 @@
 
 #include "phone/link.h"
 
+#include "avatar_cache.h"
+
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -872,9 +874,17 @@ std::string PhoneLink::nameFor(const std::string &address) const
     return found == m_contactNames.end() ? std::string() : found->second;
 }
 
+std::string PhoneLink::avatarFor(const std::string &address) const
+{
+    const auto found = m_contactAvatars.find(numberKey(address));
+    return found == m_contactAvatars.end() ? std::string() : found->second;
+}
+
 void PhoneLink::addContact(const std::string &vcard)
 {
     std::string name;
+    std::string photo;
+    bool photoIsUri = false;
     std::vector<std::string> numbers;
     for (const std::string &line : unfold(vcard)) {
         const auto colon = line.find(':');
@@ -888,13 +898,28 @@ void PhoneLink::addContact(const std::string &vcard)
             name = value;
         else if (key == "TEL" || key.rfind("TEL;", 0) == 0)
             numbers.push_back(value);
+        else if (key.rfind("PHOTO", 0) == 0) {
+            photo = value;
+            photoIsUri = key.find("VALUE=URI") != std::string::npos;
+        }
     }
     if (name.empty())
         return;
+    // A data: URL carries the pixels; content:// needs the phone's permission.
+    if (photo.rfind("data:", 0) == 0)
+        photo = photo.substr(photo.find(',') + 1);
+    else if (photoIsUri || photo.rfind("http", 0) == 0 || photo.rfind("content:", 0) == 0)
+        photo.clear();
     for (const std::string &number : numbers) {
         const std::string key = numberKey(number);
-        if (!key.empty())
-            m_contactNames[key] = name;
+        if (key.empty())
+            continue;
+        m_contactNames[key] = name;
+        if (!photo.empty()) {
+            const std::string path = cutefish::messages::saveAvatarBase64("sms:" + key, photo);
+            if (!path.empty())
+                m_contactAvatars[key] = path;
+        }
     }
 }
 

@@ -18,6 +18,7 @@ add_executable(cutefish-messages
     src/signal_rpc.cpp
     src/signal_backend.cpp
     src/signal_store.cpp
+    src/avatar_cache.cpp
     src/messages_window.cpp
     src/phone/discovery.cpp
     src/phone/certificate.cpp
@@ -35,7 +36,8 @@ target_include_directories(store-probe PRIVATE src ${SQLITE_INCLUDE_DIRS})
 target_link_libraries(store-probe PRIVATE Cutefish::ToolkitBase ${SQLITE_LIBRARIES})
 
 add_executable(pair-probe src/tools/pair_probe.cpp
-    src/phone/discovery.cpp src/phone/certificate.cpp src/phone/link.cpp)
+    src/phone/discovery.cpp src/phone/certificate.cpp src/phone/link.cpp
+    src/avatar_cache.cpp)
 target_include_directories(pair-probe PRIVATE src)
 target_link_libraries(pair-probe PRIVATE Cutefish::ToolkitBase OpenSSL::SSL OpenSSL::Crypto)
 

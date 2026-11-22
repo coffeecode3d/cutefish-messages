@@ -184,6 +184,8 @@ void SmsBackend::rebuild()
             thread.addresses.push_back(conversation.address);
         thread.group = thread.addresses.size() > 1;
         thread.name = thread.group ? groupName(thread.addresses) : nameOf(conversation.address);
+        if (!thread.group)
+            thread.avatarPath = m_phone.avatarFor(conversation.address);
         thread.snippet = conversation.snippet;
         thread.lastTimestamp = timestampOf(conversation.date);
         thread.unread = conversation.read || m_read.count(conversation.threadId) ? 0 : 1;
@@ -249,6 +251,27 @@ void SmsBackend::markRead(const Thread &thread)
         if (known.threadId == thread.threadId)
             known.unread = 0;
     }
+}
+
+void SmsBackend::setUnread(const Thread &thread, bool unread)
+{
+    if (thread.threadId == 0)
+        return;
+    if (unread) {
+        m_read.erase(thread.threadId);
+        for (phone::Conversation &conversation : m_conversations) {
+            if (conversation.threadId == thread.threadId)
+                conversation.read = false;
+        }
+    } else {
+        m_read.insert(thread.threadId);
+        for (phone::Conversation &conversation : m_conversations) {
+            if (conversation.threadId == thread.threadId)
+                conversation.read = true;
+        }
+    }
+    rebuild();
+    threadsChanged();
 }
 
 bool SmsBackend::send(const Thread &thread, const std::string &body, std::string &error)

@@ -42,7 +42,26 @@ public:
     // Fill the thread's messages, if they are not held yet.
     virtual void loadThread(const Thread &thread) = 0;
     virtual void markRead(const Thread &thread) = 0;
+    // Read state the services let us keep locally.
+    virtual void setUnread(const Thread &thread, bool unread)
+    {
+        (void)thread;
+        (void)unread;
+    }
+    // Whether a conversation can be removed from this app.
+    virtual bool canDelete() const { return false; }
+    virtual bool removeThread(const Thread &thread)
+    {
+        (void)thread;
+        return false;
+    }
     virtual bool send(const Thread &thread, const std::string &body, std::string &error) = 0;
+    // Tells the service the user is composing, where it supports that.
+    virtual void sendTyping(const Thread &thread, bool typing)
+    {
+        (void)thread;
+        (void)typing;
+    }
     // The original of a previewed picture, once it lands.
     virtual void fetchAttachment(int64_t messageId) = 0;
 
@@ -51,6 +70,8 @@ public:
     base::Signal<> statusChanged;
     // A message's sharper attachment arrived: its message id and file.
     base::Signal<int64_t, std::string> attachmentReady;
+    // The other side started or stopped typing in a thread.
+    base::Signal<std::string, bool> typingChanged;
 };
 
 } // namespace cutefish::messages

@@ -202,4 +202,19 @@ void SignalStore::markThreadRead(const std::string &threadKey)
     sqlite3_finalize(statement);
 }
 
+void SignalStore::deleteThread(const std::string &threadKey)
+{
+    if (!m_db)
+        return;
+    for (const char *sql : {"DELETE FROM messages WHERE thread_key=?",
+                            "DELETE FROM threads WHERE key=?"}) {
+        sqlite3_stmt *statement = nullptr;
+        if (sqlite3_prepare_v2(m_db, sql, -1, &statement, nullptr) != SQLITE_OK)
+            continue;
+        sqlite3_bind_text(statement, 1, threadKey.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(statement);
+        sqlite3_finalize(statement);
+    }
+}
+
 } // namespace cutefish::messages

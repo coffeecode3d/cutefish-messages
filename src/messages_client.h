@@ -20,6 +20,9 @@ struct Message
     std::string sender;
     bool outgoing = false;
     bool read = true;
+    // What the service says about an outgoing message: "Sent", "Read", or
+    // empty when it reports nothing.
+    std::string receipt;
     // A decoded preview written under the cache, when the message has one.
     std::string attachmentPath;
     // The phone's message id, to match an arriving attachment to its bubble.
@@ -33,6 +36,8 @@ struct Thread
     std::string service;
     std::string serviceName;
     std::string name;
+    // A picture from the phone's address book or the service's profile.
+    std::string avatarPath;
     std::string lastTimestamp;
     // The latest message's text, for the list.
     std::string snippet;

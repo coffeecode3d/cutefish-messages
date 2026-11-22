@@ -3,6 +3,8 @@
 
 #include "signal_backend.h"
 
+#include "avatar_cache.h"
+
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -82,8 +84,14 @@ bool SignalBackend::start(std::string &error)
 {
     // History is ours; signal-cli keeps none. Load it before the helper, so
     // the list is there even when no account is linked.
-    for (Thread &thread : m_store.load())
+    for (Thread &thread : m_store.load()) {
+        for (Message &message : thread.messages) {
+            if (message.outgoing)
+                message.receipt = message.read ? "Read" : "Sent";
+        }
+        thread.avatarPath = avatarFor(thread.key);
         m_threads[thread.key] = std::move(thread);
+    }
 
     // Only start the helper when there is an account to serve; otherwise the
     // service stays offered in the sheet and the daemon starts on linking.
@@ -109,6 +117,8 @@ bool SignalBackend::start(std::string &error)
                 m_account = stringOr(first["aci"]);
             m_linked = !m_account.empty();
             if (m_linked) {
+                for (auto &[key, thread] : m_threads)
+                    requestAvatar(thread);
                 loadContacts();
                 beginReceive();
                 statusChanged();
@@ -159,6 +169,41 @@ void SignalBackend::link(LinkUri onUri, LinkDone done)
             }
             done(m_linked, m_linked ? std::string() : "Signal did not return an account.");
         });
+    });
+}
+
+void SignalBackend::requestAvatar(Thread &thread)
+{
+    if (thread.avatarPath.empty())
+        thread.avatarPath = avatarFor(thread.key);
+    if (!thread.avatarPath.empty())
+        return;
+    // Ask once a session; a missing picture is not worth a poll every minute.
+    if (!m_avatarRequested.insert(thread.key).second)
+        return;
+    base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
+    if (thread.group)
+        params.insert("groupId", thread.address);
+    else
+        params.insert("contact", thread.address);
+    const std::string key = thread.key;
+    m_rpc.call("getAvatar", std::move(params),
+               [this, key](bool ok, const base::json::Value &result, const std::string &) {
+        if (!ok)
+            return;
+        const std::string data = stringOr(result["data"]);
+        if (data.empty())
+            return;
+        const std::string path = saveAvatarBase64(key, data);
+        if (path.empty())
+            return;
+        const auto found = m_threads.find(key);
+        if (found == m_threads.end())
+            return;
+        found->second.avatarPath = path;
+        m_store.saveThread(found->second);
+        threadsChanged();
     });
 }
 
@@ -227,6 +272,7 @@ void SignalBackend::refresh()
                 continue;
             Thread &thread = threadFor("signal:g:" + id, stringOr(group["name"], "Group"), true);
             thread.group = true;
+            requestAvatar(thread);
             m_store.saveThread(thread);
         }
         threadsChanged();
@@ -250,6 +296,15 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
     const std::string name = stringOr(envelope["sourceName"]);
     const int64_t sent = envelope["timestamp"].toInt();
 
+    const base::json::Value &typing = envelope["typingMessage"];
+    if (typing.isObject()) {
+        const std::string groupId = stringOr(typing["groupId"]);
+        const std::string key = groupId.empty() ? "signal:" + from : "signal:g:" + groupId;
+        const std::string action = stringOr(typing["action"]);
+        typingChanged(key, action == "STARTED" || action == "started");
+        return;
+    }
+
     const base::json::Value &data = envelope["dataMessage"];
     if (data.isObject()) {
         const std::string body = stringOr(data["message"]);
@@ -268,6 +323,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
             title = name.empty() ? from : name;
         }
         Thread &thread = threadFor(key, title, group);
+        requestAvatar(thread);
         if (hasMessage(thread, when))
             return;
         Message message;
@@ -298,6 +354,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
                     if (timestamps[i].toInt() != message.id)
                         continue;
                     message.read = true;
+                    message.receipt = "Read";
                     m_store.setMessageRead(key, message.id);
                 }
             }
@@ -325,6 +382,7 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
             title = destination;
         }
         Thread &thread = threadFor(key, title, group);
+        requestAvatar(thread);
         if (hasMessage(thread, when))
             return;
         Message message;
@@ -333,6 +391,8 @@ void SignalBackend::handleEnvelope(const base::json::Value &envelope)
         message.body = body;
         message.timestamp = timestampOf(when);
         message.outgoing = true;
+        message.read = false;
+        message.receipt = "Sent";
         thread.messages.push_back(message);
         thread.snippet = body;
         thread.lastTimestamp = message.timestamp;
@@ -389,6 +449,27 @@ std::vector<Thread> SignalBackend::threads() const
     return list;
 }
 
+void SignalBackend::setUnread(const Thread &thread, bool unread)
+{
+    const auto found = m_threads.find(thread.key);
+    if (found == m_threads.end())
+        return;
+    found->second.unread = unread ? 1 : 0;
+    m_store.saveThread(found->second);
+    threadsChanged();
+}
+
+bool SignalBackend::removeThread(const Thread &thread)
+{
+    const auto found = m_threads.find(thread.key);
+    if (found == m_threads.end())
+        return false;
+    m_threads.erase(found);
+    m_store.deleteThread(thread.key);
+    threadsChanged();
+    return true;
+}
+
 void SignalBackend::loadThread(const Thread &thread)
 {
     m_openKey = thread.key;
@@ -411,6 +492,10 @@ void SignalBackend::markRead(const Thread &thread)
     }
     if (newest == 0)
         return;
+    const auto sent = m_receiptSent.find(thread.key);
+    if (sent != m_receiptSent.end() && sent->second >= newest)
+        return;
+    m_receiptSent[thread.key] = newest;
     base::json::Value params = base::json::Value::object();
     params.insert("account", m_account);
     base::json::Value::Array recipients;
@@ -419,6 +504,24 @@ void SignalBackend::markRead(const Thread &thread)
     params.insert("targetTimestamp", newest);
     params.insert("type", "read");
     m_rpc.call("sendReceipt", std::move(params), nullptr);
+}
+
+void SignalBackend::sendTyping(const Thread &thread, bool typing)
+{
+    if (!m_linked)
+        return;
+    base::json::Value params = base::json::Value::object();
+    params.insert("account", m_account);
+    if (thread.group) {
+        params.insert("groupId", thread.address);
+    } else {
+        base::json::Value::Array recipients;
+        recipients.push_back(base::json::Value(thread.address));
+        params.insert("recipient", base::json::Value(std::move(recipients)));
+    }
+    if (!typing)
+        params.insert("stop", true);
+    m_rpc.call("sendTyping", std::move(params), nullptr);
 }
 
 bool SignalBackend::send(const Thread &thread, const std::string &body, std::string &error)
@@ -459,6 +562,8 @@ bool SignalBackend::send(const Thread &thread, const std::string &body, std::str
         message.body = body;
         message.timestamp = timestampOf(when);
         message.outgoing = true;
+        message.read = false;
+        message.receipt = "Sent";
         target.messages.push_back(message);
         target.snippet = body;
         target.lastTimestamp = message.timestamp;

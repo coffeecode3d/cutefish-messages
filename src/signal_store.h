@@ -29,6 +29,7 @@ public:
     void saveMessage(const std::string &threadKey, const Message &message);
     void setMessageRead(const std::string &threadKey, int64_t messageId);
     void markThreadRead(const std::string &threadKey);
+    void deleteThread(const std::string &threadKey);
 
 private:
     SignalStore(const SignalStore &) = delete;

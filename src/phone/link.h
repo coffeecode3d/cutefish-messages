@@ -99,6 +99,8 @@ public:
     void requestContacts();
     // The contact's name for a number, or empty when it is not in the book.
     std::string nameFor(const std::string &address) const;
+    // The contact's picture, already written under the cache.
+    std::string avatarFor(const std::string &address) const;
     // Sends through the phone's SIM. False when there is no link.
     bool sendSms(const std::vector<std::string> &addresses, const std::string &body,
                  std::string &error);
@@ -172,6 +174,7 @@ private:
     std::map<int64_t, Conversation> m_conversations;
     // Normalized number to name, from the phone's vCards.
     std::map<std::string, std::string> m_contactNames;
+    std::map<std::string, std::string> m_contactAvatars;
     // Threads already fetched, so a newly pushed message joins its thread.
     std::map<int64_t, std::vector<SmsMessage>> m_threads;
     // One entry per attachment asked for, in the order asked.

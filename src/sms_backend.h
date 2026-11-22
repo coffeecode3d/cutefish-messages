@@ -31,6 +31,7 @@ public:
     std::vector<Thread> threads() const override { return m_threads; }
     void loadThread(const Thread &thread) override;
     void markRead(const Thread &thread) override;
+    void setUnread(const Thread &thread, bool unread) override;
     bool send(const Thread &thread, const std::string &body, std::string &error) override;
     void fetchAttachment(int64_t messageId) override;
 

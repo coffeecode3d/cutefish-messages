@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -35,7 +36,11 @@ public:
     std::vector<Thread> threads() const override;
     void loadThread(const Thread &thread) override;
     void markRead(const Thread &thread) override;
+    void setUnread(const Thread &thread, bool unread) override;
+    bool canDelete() const override { return true; }
+    bool removeThread(const Thread &thread) override;
     bool send(const Thread &thread, const std::string &body, std::string &error) override;
+    void sendTyping(const Thread &thread, bool typing) override;
     void fetchAttachment(int64_t messageId) override { (void)messageId; }
 
     // Begins linking this app as a device; the URI is meant for a QR code.
@@ -45,6 +50,7 @@ private:
     bool ensureDaemon(std::string &error);
     void beginReceive();
     void loadContacts();
+    void requestAvatar(Thread &thread);
     void handleNotification(const base::json::Value &params);
     void handleEnvelope(const base::json::Value &envelope);
     Thread &threadFor(const std::string &key, const std::string &name, bool group);
@@ -64,6 +70,8 @@ private:
     bool m_receiving = false;
     std::map<std::string, Thread> m_threads;
     std::map<std::string, std::string> m_contactNames;
+    std::map<std::string, int64_t> m_receiptSent;
+    std::set<std::string> m_avatarRequested;
     std::vector<base::Subscription> m_subscriptions;
 };
 
