@@ -624,6 +624,13 @@ public:
 
     bool acceptsPointer() const override { return true; }
     std::function<void()> onClicked;
+    void setReady(bool ready)
+    {
+        if (m_ready == ready)
+            return;
+        m_ready = ready;
+        requestPaint();
+    }
 
 protected:
     void layout() override
@@ -638,8 +645,10 @@ protected:
         painter.fillRect({12, 0, geometry().width - 24, 1},
                          theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.08)
                                         : ui::Color::rgb(0x000000).withAlpha(0.07));
-        painter.fillEllipse({18, (geometry().height - 16) / 2, 16, 16},
-                            theme.highlight.withAlpha(0.85));
+        const ui::Color dot = m_ready ? ui::Color::rgb(0x30D158)
+                                      : (theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.25)
+                                                        : ui::Color::rgb(0x000000).withAlpha(0.20));
+        painter.fillEllipse({18, (geometry().height - 16) / 2, 16, 16}, dot);
     }
 
     void pointerPress(const ui::PointerEvent &event) override
@@ -650,6 +659,7 @@ protected:
 
 private:
     ui::Label *m_label;
+    bool m_ready = false;
 };
 
 // Which services feed the window: SMS now, the others named honestly.
@@ -671,7 +681,7 @@ public:
         m_footer->setFadesWhenDisabled(false);
 
         const std::pair<const char *, const char *> services[] = {
-            {"Phone", "SMS & MMS \u00b7 connected"},
+            {"Phone", "SMS & MMS"},
             {"Signal", "Not added yet"},
             {"Telegram", "Not added yet"},
             {"iPhone", "BlueFerry, later"},
@@ -693,6 +703,14 @@ public:
     bool acceptsPointer() const override { return true; }
     bool acceptsFocus() const override { return true; }
     void open() { setVisible(true); setFocus(); requestPaint(); }
+
+    void setPhoneState(const std::string &detail)
+    {
+        if (m_rows.empty())
+            return;
+        m_rows[0].detail->setText(detail);
+        requestLayout();
+    }
 
 protected:
     void layout() override
@@ -854,6 +872,20 @@ public:
     void showImage(int64_t id, const std::string &path)
     {
         m_viewer->show(id, path);
+    }
+
+    void refreshServices()
+    {
+        bool ready = false;
+        std::string phone = "SMS & MMS";
+        for (const auto &backend : m_window.m_backends) {
+            if (backend->account().id != "sms")
+                continue;
+            ready = backend->ready();
+            phone = ready ? backend->statusLine() : std::string("Not connected");
+        }
+        m_services->setReady(ready);
+        m_accounts->setPhoneState(phone);
     }
 
     // Rebuilds the conversation; the scroll to the newest message waits for
@@ -1297,6 +1329,7 @@ void MessagesWindow::updateStatus()
             return;
         }
         m_root->status()->setText(text);
+        m_root->refreshServices();
         return;
     }
     const Status status = m_client->status();
