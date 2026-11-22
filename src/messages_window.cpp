@@ -872,7 +872,16 @@ MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
         second.lastTimestamp = "2026-11-21T18:04:00";
         second.messages = {{"4", "Dinner on Sunday?", "2026-11-21T18:04:00", "Mum", false, true}};
         second.snippet = second.messages.back().body;
-        m_threads = {first, second};
+        Thread group;
+        group.key = "demo:3";
+        group.name = "Sunday dinner";
+        group.group = true;
+        group.lastTimestamp = "2026-11-21T18:04:00";
+        group.messages = {{"4", "Dinner on Sunday?", "2026-11-21T18:04:00", "Mum", false, true},
+                          {"5", "I can bring dessert.", "2026-11-21T18:06:00", "Avery", false, true},
+                          {"6", "Perfect, see you both.", "2026-11-21T18:07:00", "", true, true}};
+        group.snippet = group.messages.back().body;
+        m_threads = {group, first, second};
     } else {
         std::string phoneError;
         m_phone = std::make_unique<phone::PhoneLink>(loop);
@@ -933,6 +942,35 @@ MessagesWindow::~MessagesWindow()
 {
     m_themeSubscription.reset();
     m_subscriptions.clear();
+}
+
+std::string MessagesWindow::nameOf(const std::string &address) const
+{
+    if (m_phone) {
+        const std::string known = m_phone->nameFor(address);
+        if (!known.empty())
+            return known;
+    }
+    return prettyAddress(address);
+}
+
+std::string MessagesWindow::groupName(const std::vector<std::string> &addresses) const
+{
+    std::vector<std::string> names;
+    for (const std::string &address : addresses) {
+        const std::string name = nameOf(address);
+        if (std::find(names.begin(), names.end(), name) == names.end())
+            names.push_back(name);
+    }
+    if (names.empty())
+        return tr("Group conversation");
+    if (names.size() <= 2) {
+        std::string joined = names[0];
+        for (size_t i = 1; i < names.size(); ++i)
+            joined += " & " + names[i];
+        return joined;
+    }
+    return names[0] + ", " + names[1] + " +" + std::to_string(names.size() - 2);
 }
 
 void MessagesWindow::applyTheme()
@@ -997,16 +1035,22 @@ void MessagesWindow::reloadFromPhone()
         thread.key = "phone:" + std::to_string(conversation.threadId);
         thread.threadId = conversation.threadId;
         thread.address = conversation.address;
-        thread.name = m_phone ? m_phone->nameFor(conversation.address) : std::string();
-        if (thread.name.empty())
-            thread.name = prettyAddress(conversation.address);
+        thread.addresses = conversation.addresses;
+        if (thread.addresses.empty() && !conversation.address.empty())
+            thread.addresses.push_back(conversation.address);
+        thread.group = thread.addresses.size() > 1;
+        thread.name = thread.group ? groupName(thread.addresses) : nameOf(conversation.address);
         thread.snippet = conversation.snippet;
         thread.lastTimestamp = timestampOf(conversation.date);
         thread.unread = conversation.read || m_readThreads.count(conversation.threadId) ? 0 : 1;
         const auto cached = m_phoneThreads.find(conversation.threadId);
         if (cached != m_phoneThreads.end()) {
-            for (const phone::SmsMessage &sms : cached->second)
-                thread.messages.push_back(messageOf(sms));
+            for (const phone::SmsMessage &sms : cached->second) {
+                Message message = messageOf(sms);
+                if (thread.group && !message.outgoing)
+                    message.sender = nameOf(message.handle);
+                thread.messages.push_back(std::move(message));
+            }
         }
         m_threads.push_back(std::move(thread));
     }
@@ -1064,8 +1108,12 @@ void MessagesWindow::phoneMessages(int64_t threadId, std::vector<phone::SmsMessa
         && m_threads[size_t(m_current)].threadId == threadId) {
         Thread &thread = m_threads[size_t(m_current)];
         thread.messages.clear();
-        for (const phone::SmsMessage &sms : m_phoneThreads[threadId])
-            thread.messages.push_back(messageOf(sms));
+        for (const phone::SmsMessage &sms : m_phoneThreads[threadId]) {
+            Message message = messageOf(sms);
+            if (thread.group && !message.outgoing)
+                message.sender = nameOf(message.handle);
+            thread.messages.push_back(std::move(message));
+        }
         const std::string last = thread.messages.empty()
                 ? std::string()
                 : thread.messages.back().timestamp + thread.messages.back().body;

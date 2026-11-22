@@ -15,6 +15,8 @@ phone is the normal KDE Connect app.
 - Conversations and full message history from the phone, newest first.
 - Contact names from the phone's address book, with numbers formatted when
   there is no match.
+- Group conversations: participant names in the title and above each bubble,
+  and replies to every address.
 - MMS pictures: the newest few in a conversation download their originals
   automatically, one at a time; older ones stay as the phone's preview until
   you click them, and the viewer sharpens in place when the original lands.

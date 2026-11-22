@@ -49,6 +49,8 @@ private:
     void refreshOpenThread();
     void openImage(int64_t messageId, const std::string &path);
     void applyTheme();
+    std::string nameOf(const std::string &address) const;
+    std::string groupName(const std::vector<std::string> &addresses) const;
     void phoneConversations(std::vector<phone::Conversation> conversations);
 
     // The summaries arrive in a burst; one refresh follows it.
