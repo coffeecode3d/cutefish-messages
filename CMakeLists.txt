@@ -11,6 +11,7 @@ add_executable(cutefish-messages
     src/main.cpp
     src/messages_client.cpp
     src/notifier.cpp
+    src/sms_backend.cpp
     src/messages_window.cpp
     src/phone/discovery.cpp
     src/phone/certificate.cpp

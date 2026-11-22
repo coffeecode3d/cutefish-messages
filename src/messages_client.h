@@ -29,6 +29,9 @@ struct Message
 struct Thread
 {
     std::string key;
+    // Which service this conversation came from, and its display name.
+    std::string service;
+    std::string serviceName;
     std::string name;
     std::string lastTimestamp;
     // The latest message's text, for the list.

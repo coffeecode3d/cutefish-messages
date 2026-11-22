@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <array>
+#include <utility>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -648,6 +649,119 @@ private:
     int64_t m_messageId = 0;
 };
 
+// The sidebar's footer: a quiet pill that opens the accounts sheet.
+class ServicesPill : public ui::View
+{
+public:
+    ServicesPill()
+        : m_label(addChild<ui::Label>(tr("Services")))
+    {
+        m_label->setFontSize(ui::Theme::current().smallFontSize());
+        m_label->setVerticallyCentered(true);
+        m_label->setFadesWhenDisabled(false);
+    }
+    bool acceptsPointer() const override { return true; }
+    std::function<void()> onClicked;
+protected:
+    void layout() override { m_label->setGeometry({40, 0, geometry().width - 52, geometry().height}); }
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        painter.fillRoundedRect({0, 0, geometry().width, geometry().height}, 12,
+                                theme.darkMode ? ui::Color::rgb(0xFFFFFF).withAlpha(0.08)
+                                               : ui::Color::rgb(0x000000).withAlpha(0.05));
+        painter.fillEllipse({12, (geometry().height - 18) / 2, 18, 18}, theme.highlight);
+    }
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        if (event.button == ui::MouseButton::Left && onClicked)
+            onClicked();
+    }
+private:
+    ui::Label *m_label;
+};
+
+// Which services feed the window; SMS is here, the others are next.
+class AccountsSheet : public ui::View
+{
+public:
+    AccountsSheet()
+        : m_title(addChild<ui::Label>(tr("Services")))
+        , m_subtitle(addChild<ui::Label>(tr("Conversations from every service in one window.")))
+    {
+        m_title->setFontSize(ui::Theme::current().fontSize() + 4);
+        m_title->setFadesWhenDisabled(false);
+        m_subtitle->setFontSize(ui::Theme::current().smallFontSize());
+        m_subtitle->setColor(ui::ColorId::DisabledText);
+        m_subtitle->setFadesWhenDisabled(false);
+        const std::pair<const char *, const char *> rows[] = {
+            {"Phone", "SMS & MMS"},
+            {"Signal", "Not added yet"},
+            {"Telegram", "Not added yet"},
+            {"iPhone", "BlueFerry, later"},
+            {"Google Messages", "RCS is closed to other apps"},
+        };
+        for (const auto &[name, detail] : rows) {
+            auto *row = addChild<ui::Label>(std::string(name) + "   " + detail);
+            row->setFontSize(ui::Theme::current().fontSize() - 1);
+            row->setFadesWhenDisabled(false);
+            row->setColor(ui::ColorId::Text);
+            m_rows.push_back(row);
+        }
+        setVisible(false);
+    }
+    bool acceptsPointer() const override { return true; }
+    bool acceptsFocus() const override { return true; }
+    void open() { setVisible(true); setFocus(); requestPaint(); }
+protected:
+    void layout() override
+    {
+        const double cardWidth = std::min(420.0, geometry().width - 80);
+        const double left = (geometry().width - cardWidth) / 2;
+        m_title->setGeometry({left + 28, 60, cardWidth - 56, 30});
+        m_subtitle->setGeometry({left + 28, 90, cardWidth - 56, 20});
+        double y = 130;
+        for (ui::Label *row : m_rows) {
+            row->setGeometry({left + 28, y, cardWidth - 56, 24});
+            y += 34;
+        }
+        m_cardHeight = y + 24;
+    }
+    void paint(ui::Painter &painter) override
+    {
+        const ui::Theme &theme = ui::Theme::current();
+        painter.fillRect({0, 0, geometry().width, geometry().height},
+                         ui::Color::rgb(0x000000).withAlpha(0.45));
+        const double cardWidth = std::min(420.0, geometry().width - 80);
+        const double left = (geometry().width - cardWidth) / 2;
+        painter.fillRoundedRect({left, 40, cardWidth, m_cardHeight}, 20,
+                                theme.darkMode ? ui::Color::rgb(0x1C1C1E).withAlpha(0.97)
+                                               : ui::Color::rgb(0xFFFFFF).withAlpha(0.97));
+    }
+    void pointerPress(const ui::PointerEvent &event) override
+    {
+        const double cardWidth = std::min(420.0, geometry().width - 80);
+        const double left = (geometry().width - cardWidth) / 2;
+        const ui::RectF card {left, 40, cardWidth, m_cardHeight};
+        if (event.position.x < card.x || event.position.x > card.x + card.width
+            || event.position.y < card.y || event.position.y > card.y + card.height)
+            setVisible(false);
+    }
+    bool keyPress(const ui::KeyEvent &event) override
+    {
+        if (event.key == ui::key::Escape) {
+            setVisible(false);
+            return true;
+        }
+        return false;
+    }
+private:
+    ui::Label *m_title;
+    ui::Label *m_subtitle;
+    std::vector<ui::Label *> m_rows;
+    double m_cardHeight = 300;
+};
+
 class MessagesWindow::RootView : public ui::View
 {
 public:
@@ -664,7 +778,10 @@ public:
         , m_send(addChild<SendButton>())
         , m_status(addChild<ui::Label>())
         , m_viewer(addChild<ImageViewer>())
+        , m_services(addChild<ServicesPill>())
+        , m_accounts(addChild<AccountsSheet>())
     {
+        m_services->onClicked = [this] { m_accounts->open(); };
         m_header->setContentUnderButtons(true);
         m_header->setButtonMargin(14);
         setClipsChildren(true);
@@ -797,8 +914,10 @@ protected:
         m_window.setBackgroundBlur({0, 0, width, height}, 24);
         m_header->setGeometry({0, 0, width, 44});
         m_viewer->setGeometry({0, 0, width, height});
+        m_accounts->setGeometry({0, 0, width, height});
         m_sidebarTitle->setGeometry({124, 11, std::max(0.0, kSidebar - 140), 22});
-        m_sidebar->setGeometry({0, 44, kSidebar, height - kStatus - 44});
+        m_sidebar->setGeometry({0, 44, kSidebar, std::max(0.0, height - kStatus - 44 - 42)});
+        m_services->setGeometry({10, height - kStatus - 40, kSidebar - 20, 30});
         const double left = kSidebar;
         const double right = width - kSidebar;
         m_title->setGeometry({left + 18, 10, std::max(0.0, right - 140), 24});
@@ -829,6 +948,8 @@ private:
     SendButton *m_send;
     ui::Label *m_status;
     ImageViewer *m_viewer;
+    ServicesPill *m_services;
+    AccountsSheet *m_accounts;
 };
 
 MessagesWindow::MessagesWindow(base::EventLoop *loop, bool demo)
