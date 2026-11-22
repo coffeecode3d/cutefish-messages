@@ -4,6 +4,8 @@ Cutefish's messaging app: your phone's text messages on the desktop, in a
 window that belongs in macOS Tahoe — a glass body, a frosted sidebar, and the
 conversation on its own paper.
 
+![Messages](docs/screenshot.png)
+
 Texts arrive over Wi-Fi. Nothing of KDE runs on the desktop: the app speaks the
 published KDE Connect protocol itself, so the only thing to install on the
 phone is the normal KDE Connect app.
